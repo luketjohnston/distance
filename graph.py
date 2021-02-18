@@ -3,7 +3,7 @@ import os
 import pickle
 import numpy as np
 
-from ppo import *
+from train import *
 
 dir_path = os.path.dirname(os.path.realpath(__file__))
 loss_savepath = os.path.join(dir_path, 'loss.pickle')
