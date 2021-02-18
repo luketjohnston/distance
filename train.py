@@ -1,5 +1,6 @@
 import tensorflow as tf
 import timeit
+from queue import Queue
 from tensorflow.keras.layers import Conv2D, Flatten, Dense
 from toyenv import ToyEnv
 import random
@@ -16,7 +17,32 @@ import numpy as np
 import agent
 from test import *
 
+LOAD_SAVE = True
 
+OPTIMIZER = 'SGD' # 'Adam' or 'RMSprop' or 'SGD'
+#OPTIMIZER = 'Adam' # 'Adam' or 'RMSprop' or 'SGD'
+
+CLIP_REWARDS = True
+#LR = 0.000001 #use this for fully connected
+#LR = 0.001 # this is tf default
+#LR = 0.01
+#LR = 0.0001
+#LR = 0.00001 
+LR = 0.0003
+#LR = 0.00003
+
+USE_TARGET = False
+
+SAVE_CYCLES = 1
+BATCH_SIZE = 128
+ENVS = 16
+STEPS_BETWEEN_TRAINING = 64
+PARAM_UPDATES_PER_CYCLE = 256
+
+REPLAY_BUFFER_SIZE = 100000
+
+# it seems like l2 loss in agent is better for learning action,
+# but ends up with worse average distance from correct
 '''
 Note: the inaccurrate actions appear (from small amount of testing)
   to always be the no-op. (they are slightly smaller than the next
@@ -26,32 +52,6 @@ Note: the inaccurrate actions appear (from small amount of testing)
   is super small?" TODO this is something we can test
 '''
 
-
-
-LOAD_SAVE = True
-#if not LOAD_SAVE:
-#  tf.config.run_functions_eagerly(True)
-#else:
-#  # TODO figure out graph mode
-#  # seems like eager is default for me, have to manually disable
-#  #tf.compat.v1.disable_eager_execution() # TF2; above holds
-#  pass
-
-
-OPTIMIZER = 'SGD' # 'Adam' or 'RMSprop' or 'SGD'
-#OPTIMIZER = 'RMSprop' # 'Adam' or 'RMSprop' or 'SGD'
-
-# it seems like l2 loss in agent is better for learning action,
-# but ends up with worse average distance from correct
-
-CLIP_REWARDS = True
-#LR = 0.000001 #use this for fully connected
-#LR = 0.001 # this is tf default
-#LR = 0.01
-#LR = 0.0001
-#LR = 0.00001 
-LR = 0.003
-LR = 0.00003
 
 # FOR learning constant function = 1, best bet is rmsprop 0.003,
 # and I was using l2 loss
@@ -65,11 +65,6 @@ LR = 0.00003
 # the other observed transitions, then it can explode. This would explain why more
 # PARAM_UPDATES_PER_CYCLE is bad, but not why more STEPS_BETWEEN_TRAINING is bad... 
 
-SAVE_CYCLES = 1
-BATCH_SIZE = 128
-ENVS = 16
-STEPS_BETWEEN_TRAINING = 128
-PARAM_UPDATES_PER_CYCLE = 256
 
 '''
 These settings seem stable, 
@@ -104,6 +99,7 @@ if __name__ == '__main__':
     if (LOAD_SAVE):
       #actor = tf.saved_model.load(agent.model_savepath)
       actor = tf.saved_model.load(agent.model_savepath)
+      target_actor = agent.Agent() if USE_TARGET else actor
       #sess.run(tf.compat.v1.global_variables_initializer())
     else:
       actor = agent.Agent()
@@ -114,6 +110,13 @@ if __name__ == '__main__':
       agentOpt = tf.keras.optimizers.RMSprop(learning_rate = LR)
     elif OPTIMIZER == 'SGD':
       agentOpt = tf.keras.optimizers.SGD(learning_rate = LR)
+
+    def copyWeightsFromTo(actor, target):
+      for i,v in enumerate(actor.vars):
+        target.vars[i].assign(v)
+
+    if USE_TARGET:
+      copyWeightsFromTo(actor, target_actor)
     
     envs = []
     states = []
@@ -153,13 +156,13 @@ if __name__ == '__main__':
     #  sample = random.sample(replay_buffer, batch_size)
     #  return tf.stack(sample, 0)
 
-    wgan_replay_buffer = []
+    replay_buffer = []
 
 
     while True: 
 
 
-      states_l, actions_l, old_action_probs_l, rewards_l, dones_l = [],[],[],[],[]
+      states_l, actions_l, rewards_l, dones_l = [],[],[],[]
       print('acting')
 
       for step in range(STEPS_BETWEEN_TRAINING):
@@ -196,7 +199,6 @@ if __name__ == '__main__':
         if True:
           states_l.append(tf.identity(states))
           actions_l.append(tf.identity(actions))
-          #old_action_probs_l.append(tf.identity(old_action_probs))
           rewards_l.append(tf.squeeze(tf.stack(rewards)))
           dones_l.append(tf.stack(dones))
 
@@ -211,18 +213,24 @@ if __name__ == '__main__':
       print("Frames: %d" % ((cycle + 1) * STEPS_BETWEEN_TRAINING * ENVS))
       print("Param updates: %d" % (cycle * PARAM_UPDATES_PER_CYCLE))
 
+      zipped = zip(states_l, actions_l, rewards_l, dones_l)
+
+      replay_buffer += zipped
+      if len(replay_buffer) > REPLAY_BUFFER_SIZE:
+        input('truncating replay_buffer')
+        replay_buffer = replay_buffer[len(replay_buffer) - REPLAY_BUFFER_SIZE:]
       
 
       print('training distance')
-      indices = list(range(len(states_l)))
+      indices = list(range(len(replay_buffer)))
       for b in range(PARAM_UPDATES_PER_CYCLE):
         # TODO: there's an error here, doesn't take into account dones. Shouldn't matter for toy environment though.
         batch_inds_a = random.choices(indices[:-1], k=BATCH_SIZE)
         batch_inds_k = random.choices(indices, k=BATCH_SIZE)
-        states_a = [states_l[i] for i in batch_inds_a]
-        states_b = [states_l[i+1] for i in batch_inds_a]
-        states_k = [states_l[i] for i in batch_inds_k]
-        actions_a = [actions_l[i] for i in batch_inds_a]
+        states_a = [replay_buffer[i][0] for i in batch_inds_a]
+        states_b = [replay_buffer[i+1][0] for i in batch_inds_a]
+        states_k = [replay_buffer[i][0] for i in batch_inds_k]
+        actions_a = [replay_buffer[i][1] for i in batch_inds_a]
         states_a, states_b, states_k, actions_a = [tf.stack(s) for s in [states_a, states_b, states_k, actions_a]]
         #states_a, states_b, states_k = [s[:,:,:,:,0] for s in [states_a, states_b, states_k]] # remove time dimension
         states_a, states_b, states_k = [s[:,:,:,-1] for s in [states_a, states_b, states_k]] # remove time dimension
@@ -240,7 +248,8 @@ if __name__ == '__main__':
           #print(states_b[0,:])
           #print(actions_a[0])
           #input('continue...')
-          loss = actor.loss(states_a, states_b, states_k, actions_a)
+          Dbk_target = target_actor.distance_states(states_b, states_k)
+          loss = actor.loss(states_a, states_b, states_k, actions_a, Dbk_target)
           #print("{:6f}, {:6f}, {:6f}".format(loss_pve[0].numpy(), loss_pve[1].numpy(), loss_pve[2].numpy()))
           loss_str = ''.join('{:6f}, '.format(lossv) for lossv in loss)
         grad = tape.gradient(loss, actor.vars)
@@ -254,6 +263,8 @@ if __name__ == '__main__':
       #print(loss_str)
 
 
+      if USE_TARGET:
+        copyWeightsFromTo(actor, target_actor)
          
     
       cycle += 1

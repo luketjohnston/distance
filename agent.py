@@ -60,6 +60,7 @@ IMSPEC = tf.TensorSpec([None, 2,1])
 
 INTSPEC = tf.TensorSpec([None], dtype=tf.int64)
 FLOATSPEC = tf.TensorSpec([None],)
+DISTSPEC = tf.TensorSpec([None, ACTIONS],)
 BOOLSPEC = tf.TensorSpec([None], dtype=tf.bool)
 LOGITSPEC = tf.TensorSpec([None, ACTIONS])
 ENCSPEC = tf.TensorSpec([None, ENCODING_SIZE])
@@ -73,7 +74,7 @@ EPSILON = 0.1
 #ADD_ENTROPY = True
 
 dir_path = os.path.dirname(os.path.realpath(__file__))
-model_savepath = os.path.join(dir_path, 'actor_save')
+model_savepath = os.path.join(dir_path, 'actor_save2')
 loss_savepath = os.path.join(dir_path, 'actor_loss.pickle')
 rewards_savepath = os.path.join(dir_path, 'rewards.pickle')
 
@@ -144,14 +145,20 @@ class Agent(tf.Module):
     #tf.print(r)
     return distance
 
+  @tf.function(input_signature=(IMSPEC, IMSPEC))
+  def distance_states(self, s1, s2):
+    enc1 = self.encode(s1)
+    enc2 = self.encode(s2)
+    return self.distance(enc1, enc2)
 
-  @tf.function(input_signature=(IMSPEC, IMSPEC, IMSPEC, INTSPEC))
-  def loss(self, states_a, states_b, states_k, action):
+
+  @tf.function(input_signature=(IMSPEC, IMSPEC, IMSPEC, INTSPEC, DISTSPEC))
+  def loss(self, states_a, states_b, states_k, action, Dbk_target):
     enca, encb, enck = [self.encode(x) for x in [states_a, states_b, states_k]]
     
     Dak = self.distance(enca, enck)
     Dak_a = tf.gather(Dak, action, batch_dims=1)
-    Dbk = self.distance(encb, enck)
+    #Dbk = self.distance(encb, enck)
     Dab = self.distance(enca, encb)
     Dab_a = tf.gather(Dab, action, batch_dims=1)
 
@@ -161,7 +168,7 @@ class Agent(tf.Module):
 
     # check if k == b. If so, target Dbk needs to be 0
     # TODO need to chance axis back to (1,2,3) for images
-    target = Dbk * tf.expand_dims(tf.reduce_max(tf.cast(tf.not_equal(states_b, states_k), tf.float32), axis=(1)), -1)
+    target = Dbk_target * tf.expand_dims(tf.reduce_max(tf.cast(tf.not_equal(states_b, states_k), tf.float32), axis=(1)), -1)
     #tf.print(tf.equal(target, 0.0))
     target = tf.stop_gradient(1 + DISCOUNT * tf.reduce_min(target, axis=-1))
     loss = tf.reduce_mean(tf.pow(Dak_a - target, 2))
