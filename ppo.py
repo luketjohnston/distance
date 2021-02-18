@@ -9,9 +9,22 @@ from skimage.transform import resize
 from tensorflow.keras import Model
 import gym
 from contextlib import ExitStack
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+import numpy as np
+
+import agent
+from test import *
 
 
-# TODO important i've disabled gradient descent for the moment
+'''
+Note: the inaccurrate actions appear (from small amount of testing)
+  to always be the no-op. (they are slightly smaller than the next
+  best action). Also, 1-distances are always more than 1 (
+  not sure why this is). Finally, training seems to diverge with
+  rmsprop, I suspect its because of momentum failing when gradient
+  is super small?" TODO this is something we can test
+'''
 
 
 
@@ -24,44 +37,39 @@ LOAD_SAVE = True
 #  #tf.compat.v1.disable_eager_execution() # TF2; above holds
 #  pass
 
-import matplotlib.pyplot as plt
-import matplotlib.cm as cm
-import numpy as np
-
-import agent
 
 OPTIMIZER = 'SGD' # 'Adam' or 'RMSprop' or 'SGD'
-OPTIMIZER = 'RMSprop' # 'Adam' or 'RMSprop' or 'SGD'
+#OPTIMIZER = 'RMSprop' # 'Adam' or 'RMSprop' or 'SGD'
+
+# it seems like l2 loss in agent is better for learning action,
+# but ends up with worse average distance from correct
 
 CLIP_REWARDS = True
-LR = 0.000001 #use this for fully connected
+#LR = 0.000001 #use this for fully connected
 #LR = 0.001 # this is tf default
 #LR = 0.01
 #LR = 0.0001
 #LR = 0.00001 
 LR = 0.003
+LR = 0.00003
 
 # FOR learning constant function = 1, best bet is rmsprop 0.003,
 # and I was using l2 loss
 
-#LR = 0.005 works quite well with RMSprop at learning the constant
-# 1 function, but there are spurious
-# spikes...
-
-# SGD, 0.001, BS 128, ENVS1,, SBT 128*128, PUPC=2000, Reg=0
-# gets to ~16 acc. 
-# LR=0.0001 also gets there but takes much longer, doesn't improve after
-#LR = 0.01 diverges sooner (best ~25), and weights explode
-
-# NOTE: when printing out the distances for adjacent states,
-# the matrix changes A LOT in between each step (~2). Lower learning
-# rate significantly?
+# Here's a possible explanation for explosions:
+# if we are collecting data, let's say the last states we visit are a,a,a. And we 
+# never see a transition away from a. Then every time we train on a -> a, d(a,x) 
+# is being increased (if the training affects d(a,_,action that would move closer to x)
+# basically, we just need one incorrect value in the network for a transition that wasn't
+# observed, and then if the training on other spots increases this value along with
+# the other observed transitions, then it can explode. This would explain why more
+# PARAM_UPDATES_PER_CYCLE is bad, but not why more STEPS_BETWEEN_TRAINING is bad... 
 
 SAVE_CYCLES = 1
 BATCH_SIZE = 128
-ENVS = 1
-STEPS_BETWEEN_TRAINING = 64
-PARAM_UPDATES_PER_CYCLE = 8
+ENVS = 16
+STEPS_BETWEEN_TRAINING = 128
+PARAM_UPDATES_PER_CYCLE = 256
 
 '''
 These settings seem stable, 
@@ -134,28 +142,6 @@ if __name__ == '__main__':
 
     states = tf.stack(states)
 
-    def print_accurracy(batch_size):
-      coords = np.random.randint(0,agent.WIDTH,size=(batch_size, 2, 2, 1))
-      #obs = np.zeros((batch_size, 2, agent.WIDTH, agent.HEIGHT))
-      #obs[np.arange(batch_size), 0, coords[:,0,0], coords[:,0,1]] = 1
-      #obs[np.arange(batch_size), 1, coords[:,1,0], coords[:,1,1]] = 1
-      truths = np.sum(np.abs(coords[:,0,:] - coords[:,1,:]), axis=-2)
-      #obs = tf.cast(obs, tf.float32)
-      #obs = tf.expand_dims(obs, -1)
-      #enc1 = actor.encode(obs[:,0,:,:,:])
-      #enc2 = actor.encode(obs[:,1,:,:,:])
-      enc1 = actor.encode(coords[:,0,:])
-      enc2 = actor.encode(coords[:,1,:])
-      #print(enc1)
-      #print(enc2)
-      dists = actor.distance(enc1, enc2)
-      dists = tf.reduce_min(dists, axis=-1)
-      #print(dists)
-      #print(truths)
-      truths = tf.cast(tf.squeeze(truths), tf.float32)
-      #print(dists)
-      print('accurracy: ' + str(tf.reduce_mean(tf.abs(dists - truths))))
-
     
     
     
@@ -225,6 +211,8 @@ if __name__ == '__main__':
       print("Frames: %d" % ((cycle + 1) * STEPS_BETWEEN_TRAINING * ENVS))
       print("Param updates: %d" % (cycle * PARAM_UPDATES_PER_CYCLE))
 
+      
+
       print('training distance')
       indices = list(range(len(states_l)))
       for b in range(PARAM_UPDATES_PER_CYCLE):
@@ -237,7 +225,7 @@ if __name__ == '__main__':
         actions_a = [actions_l[i] for i in batch_inds_a]
         states_a, states_b, states_k, actions_a = [tf.stack(s) for s in [states_a, states_b, states_k, actions_a]]
         #states_a, states_b, states_k = [s[:,:,:,:,0] for s in [states_a, states_b, states_k]] # remove time dimension
-        states_a, states_b, states_k = [s[:,:,:,0] for s in [states_a, states_b, states_k]] # remove time dimension
+        states_a, states_b, states_k = [s[:,:,:,-1] for s in [states_a, states_b, states_k]] # remove time dimension
         # TODO should we even have parallel environments here?
         #states_a, states_b, states_k = [tf.reshape(x, (ENVS * BATCH_SIZE, agent.WIDTH, agent.HEIGHT, 1)) for x in [states_a, states_b, states_k]]
         states_a, states_b, states_k = [tf.reshape(x, (ENVS * BATCH_SIZE, 2, 1)) for x in [states_a, states_b, states_k]]
@@ -248,6 +236,10 @@ if __name__ == '__main__':
         actions_a = tf.reshape(actions_a, (ENVS * BATCH_SIZE,))
 
         with tf.GradientTape(watch_accessed_variables=True) as tape:
+          #print(states_a[0,:])
+          #print(states_b[0,:])
+          #print(actions_a[0])
+          #input('continue...')
           loss = actor.loss(states_a, states_b, states_k, actions_a)
           #print("{:6f}, {:6f}, {:6f}".format(loss_pve[0].numpy(), loss_pve[1].numpy(), loss_pve[2].numpy()))
           loss_str = ''.join('{:6f}, '.format(lossv) for lossv in loss)
@@ -255,11 +247,11 @@ if __name__ == '__main__':
         # TODO add this back!
         agentOpt.apply_gradients(zip(grad, actor.vars))
         agent_losses += [loss]
-        print_accurracy(100)
-        #print_accurracy(3)
+        printAccuracy(100, actor)
+        actionAccuracy(100, actor)
 
         print(loss_str)
-      print(loss_str)
+      #print(loss_str)
 
 
          
