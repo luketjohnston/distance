@@ -1,4 +1,5 @@
 import gym
+import code
 import numpy as np
 from gym import spaces
 
@@ -39,15 +40,54 @@ class ToyEnv(gym.Env):
   def render(self, mode='human', close=False):
     print(self.coords)
 
-  def check_accurracy(self, batch_size):
-    coords = np.random.randint(0,self.n,size=(batch_size, 2, 2))
-    #observations = np.zeros((batch_size, 2, self.n, self.n))
-    #observations[np.arange(batch_size), 0, coords[:,0,0], coords[:,0,1]] = 1
-    #observations[np.arange(batch_size), 1, coords[:,1,0], coords[:,1,1]] = 1
-    truth1 = np.sum(np.abs(coords[:,0,:] - coords[:,1,:]), axis=-1)
-    #print(observations[0,0,:,:])
-    #print(observations[0,1,:,:])
-    print(truth1)
+  def correctActions(self, start, dest):
+    actions = []
+    if start[0] < dest[0]:
+      actions.append(1)
+    if start[0] > dest[0]:
+      actions.append(2)
+    if start[1] < dest[1]:
+      actions.append(3)
+    if start[1] > dest[1]:
+      actions.append(4)
+    if np.array_equal(start, dest):
+      actions.append(0)
+    return actions
+
+
+class LoopEnv(ToyEnv):
+  def step(self, action):
+    if not action in self.action_space: raise Exception
+    if action == 1 and self.coords[0] < self.n - 1: self.coords[0] += 1
+    if action == 2 and  self.coords[0] > 0: self.coords[0] -= 1
+    if action == 3:
+      if self.coords[1] < self.n - 1: self.coords[1] += 1
+      else: self.coords[1] = 0
+    if action == 4 and self.coords[1] > 0: self.coords[1] -= 1
+    return self.getObs(), 0.0, False, {}
+
+  def correctActions(self, start, dest):
+    actions = []
+    if start[0] < dest[0]:
+      actions.append(1)
+    if start[0] > dest[0]:
+      actions.append(2)
+    if start[1] < dest[1]:
+      actions.append(3)
+    if start[1] > dest[1]:
+      if dest[1] + self.n - start[1] <= start[1] - dest[1]:
+        actions.append(3)
+      if dest[1] + self.n - start[1] >= start[1] - dest[1]:
+        actions.append(4)
+    if np.array_equal(start, dest):
+      actions.append(0)
+      if start[0] == 0:
+        actions.append(2)
+      if start[1] == 0:
+        actions.append(4)
+      if start[0] == self.n - 1:
+        actions.append(1)
+    return actions
 
 
 
@@ -63,6 +103,6 @@ if __name__ == '__main__':
   #env.step(3)
   #env.step(4)
   #env.render()
+  code.interact(local=locals())
 
-  env.check_accurracy(3)
 

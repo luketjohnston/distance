@@ -9,7 +9,7 @@ import pickle
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import numpy as np
-from toyenv import ToyEnv
+from toyenv import ToyEnv, LoopEnv
 
 
 # For some reason this is necessary to prevent error
@@ -21,7 +21,8 @@ ENVIRONMENT = 'MontezumaRevenge-v0'
 ENVIRONMENT = 'PongDeterministic-v4'
 #ENVIRONMENT = 'CartPole-v1'
 env = gym.make(ENVIRONMENT)
-env = ToyEnv(84)
+TOYENV_SIZE = 8
+env = LoopEnv(TOYENV_SIZE)
 
 
 
@@ -52,18 +53,18 @@ STRIDES =     [4,2,1]
 ENCODING_SIZE = 2
 
 
-IMSPEC = tf.TensorSpec([None, WIDTH, HEIGHT, DEPTH])
+IMSPEC = tf.TensorSpec([None, WIDTH, HEIGHT, DEPTH],)
 if ENVIRONMENT == 'CartPole-v1':
   IMSPEC = tf.TensorSpec([None, 4])
 # FOR distance proof - of - concept
-IMSPEC = tf.TensorSpec([None, 2,1])
+IMSPEC = tf.TensorSpec([None, 2,1],)
 
 INTSPEC = tf.TensorSpec([None], dtype=tf.int64)
 FLOATSPEC = tf.TensorSpec([None],)
 DISTSPEC = tf.TensorSpec([None, ACTIONS],)
 BOOLSPEC = tf.TensorSpec([None], dtype=tf.bool)
-LOGITSPEC = tf.TensorSpec([None, ACTIONS])
-ENCSPEC = tf.TensorSpec([None, ENCODING_SIZE])
+LOGITSPEC = tf.TensorSpec([None, ACTIONS],)
+ENCSPEC = tf.TensorSpec([None, ENCODING_SIZE],)
 
 
 DISCOUNT = 0.999
@@ -75,6 +76,7 @@ EPSILON = 0.1
 
 dir_path = os.path.dirname(os.path.realpath(__file__))
 model_savepath = os.path.join(dir_path, 'actor_save2')
+accs_savepath = os.path.join(dir_path, 'accs.pickle')
 loss_savepath = os.path.join(dir_path, 'actor_loss.pickle')
 rewards_savepath = os.path.join(dir_path, 'rewards.pickle')
 
@@ -158,24 +160,24 @@ class Agent(tf.Module):
     
     Dak = self.distance(enca, enck)
     Dak_a = tf.gather(Dak, action, batch_dims=1)
-    #Dbk = self.distance(encb, enck)
     Dab = self.distance(enca, encb)
     Dab_a = tf.gather(Dab, action, batch_dims=1)
 
-    #tf.print(Dak)
-    #tf.print(Dab)
-    #tf.print(states_k)
-
     # check if k == b. If so, target Dbk needs to be 0
     # TODO need to chance axis back to (1,2,3) for images
-    target = Dbk_target * tf.expand_dims(tf.reduce_max(tf.cast(tf.not_equal(states_b, states_k), tf.float32), axis=(1)), -1)
-    #tf.print(tf.equal(target, 0.0))
-    target = tf.stop_gradient(1 + DISCOUNT * tf.reduce_min(target, axis=-1))
-    loss = tf.reduce_mean(tf.pow(Dak_a - target, 2))
-    #loss = tf.reduce_mean(tf.abs(Dak_a - target))
+    target = tf.reduce_min(Dbk_target, axis=-1)
+    mask = tf.squeeze(tf.reduce_max(tf.cast(tf.not_equal(states_b, states_k), tf.float32), axis=1))
 
-    loss += tf.reduce_mean(tf.pow(Dab_a - 1, 2))
+    target = target * mask
+    target = tf.stop_gradient(1 + DISCOUNT * target)
+
+    TD_error = tf.abs(Dak_a - target)
+
+    loss_TD = tf.reduce_mean(tf.pow(Dak_a - target, 2))
+    #loss = tf.reduce_mean(tf.abs(Dak_a - target))
+    loss_ab = tf.reduce_mean(tf.pow(Dab_a - 1, 2))
     #loss += tf.reduce_mean(tf.abs(Dab_a - 1))
+    
 
     regloss = 0
     for x in self.vars:
@@ -183,7 +185,7 @@ class Agent(tf.Module):
       regloss += REGULARIZATION_WEIGHT * tf.reduce_sum(tf.abs(x))
 
 
-    return (loss, regloss)
+    return (loss_TD, loss_ab, regloss), TD_error
     
     
 if __name__ == '__main__':
@@ -201,10 +203,13 @@ if __name__ == '__main__':
 
   losses = []
   episode_rewards = []
+  accs = []
   with open(loss_savepath, "wb") as fp:
     pickle.dump(losses, fp)
   with open(rewards_savepath, "wb") as fp:
     pickle.dump(episode_rewards, fp)
+  with open(accs_savepath, "wb") as fp:
+    pickle.dump(accs, fp)
     
 
     

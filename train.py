@@ -1,8 +1,9 @@
 import tensorflow as tf
+from replay import PrioritizedReplayBuffer
 import timeit
 from queue import Queue
 from tensorflow.keras.layers import Conv2D, Flatten, Dense
-from toyenv import ToyEnv
+from toyenv import ToyEnv, LoopEnv
 import random
 import pickle
 import os
@@ -15,12 +16,19 @@ import matplotlib.cm as cm
 import numpy as np
 
 import agent
-from test import *
+from test import actionAccuracy, printAccuracy
 
 LOAD_SAVE = True
 
+''' TODO problem: after training for a long time, seems that things 
+diverged quite far. There were some negative distances, many distances
+were just way off, action accurracy greatly decreases...'''
+
 OPTIMIZER = 'SGD' # 'Adam' or 'RMSprop' or 'SGD'
-#OPTIMIZER = 'Adam' # 'Adam' or 'RMSprop' or 'SGD'
+OPTIMIZER = 'RMSprop' # 'Adam' or 'RMSprop' or 'SGD'
+
+BUFFER_SIZE = 2**13
+#BUFFER_SIZE = 8
 
 CLIP_REWARDS = True
 #LR = 0.000001 #use this for fully connected
@@ -28,61 +36,47 @@ CLIP_REWARDS = True
 #LR = 0.01
 #LR = 0.0001
 #LR = 0.00001 
-LR = 0.0003
-#LR = 0.00003
+LR = 0.000003 # this is the best so far for toyenv, diverges at an order of magnitude higher.
+#LR = 0.003
 
 USE_TARGET = False
 
 SAVE_CYCLES = 1
 BATCH_SIZE = 128
-ENVS = 16
-STEPS_BETWEEN_TRAINING = 64
-PARAM_UPDATES_PER_CYCLE = 256
+ENVS = 2
+STEPS_BETWEEN_TRAINING = 2**10
+PARAM_UPDATES_PER_CYCLE = 100000
 
-REPLAY_BUFFER_SIZE = 100000
+TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP  = 4
 
-# it seems like l2 loss in agent is better for learning action,
-# but ends up with worse average distance from correct
-'''
-Note: the inaccurrate actions appear (from small amount of testing)
-  to always be the no-op. (they are slightly smaller than the next
-  best action). Also, 1-distances are always more than 1 (
-  not sure why this is). Finally, training seems to diverge with
-  rmsprop, I suspect its because of momentum failing when gradient
-  is super small?" TODO this is something we can test
-'''
-
-
-# FOR learning constant function = 1, best bet is rmsprop 0.003,
-# and I was using l2 loss
-
-# Here's a possible explanation for explosions:
-# if we are collecting data, let's say the last states we visit are a,a,a. And we 
-# never see a transition away from a. Then every time we train on a -> a, d(a,x) 
-# is being increased (if the training affects d(a,_,action that would move closer to x)
-# basically, we just need one incorrect value in the network for a transition that wasn't
-# observed, and then if the training on other spots increases this value along with
-# the other observed transitions, then it can explode. This would explain why more
-# PARAM_UPDATES_PER_CYCLE is bad, but not why more STEPS_BETWEEN_TRAINING is bad... 
+''' without replay_buffer.updateWeights, get to 95% acc in 25k updates '''
 
 
 '''
-These settings seem stable, 
-BATCH_SIZE = 128
-ENVS = 1
-STEPS_BETWEEN_TRAINING = 64
-PARAM_UPDATES_PER_CYCLE = 8
-LR = 0.003
-OPTIMIZER = 'RMSprop' # 'Adam' or 'RMSprop' or 'SGD'
-    loss += tf.reduce_mean(tf.pow(Dab_a - 1, 2))
-    loss = tf.reduce_mean(tf.pow(Dak_a - target, 2))
-    REGULARIZATION_WEIGHT = 0
+TODO #1: implement prioritized experience replay
+
+in LoopEnv, network reaches ~95 accuracy on best action,
+but distance from right to left is much higher than it should be.
+(~65 rather than 1). I suspect this is because these transitions
+are rarely seen in comparison to all the other ones.
+- can test this by only saving unique transitions in experience replay
+
+training seems to diverge with
+rmsprop, I suspect its because of momentum failing when gradient
+is super small?" TODO this is something we can test
+
+FOR learning constant function = 1, best bet is rmsprop 0.003,
+and I was using l2 loss
+
+Here's a possible explanation for explosions:
+if we are collecting data, let's say the last states we visit are a,a,a. And we 
+never see a transition away from a. Then every time we train on a -> a, d(a,x) 
+is being increased (if the training affects d(a,_,action that would move closer to x)
+basically, we just need one incorrect value in the network for a transition that wasn't
+observed, and then if the training on other spots increases this value along with
+the other observed transitions, then it can explode. This would explain why more
+PARAM_UPDATES_PER_CYCLE is bad, but not why more STEPS_BETWEEN_TRAINING is bad... 
 '''
-
-
-#STEPS_BETWEEN_TRAINING = 128
-#PARAM_UPDATES_PER_CYCLE = 128
-
 
 
 if __name__ == '__main__':
@@ -92,7 +86,10 @@ if __name__ == '__main__':
   if True:
 
     with open(agent.loss_savepath, "rb") as f: 
-      agentloss = pickle.load(f)
+      agentloss = []
+      #agentloss = pickle.load(f)
+    with open(agent.accs_savepath, "rb") as f: 
+      accs = pickle.load(f)
     with open(agent.rewards_savepath, "rb") as f:
       episode_rewards = pickle.load(f)
     
@@ -118,6 +115,7 @@ if __name__ == '__main__':
     if USE_TARGET:
       copyWeightsFromTo(actor, target_actor)
     
+    maxtd = 0
     envs = []
     states = []
     statelists = []
@@ -126,7 +124,7 @@ if __name__ == '__main__':
     for i in range(ENVS):
  
       #env = gym.make(agent.ENVIRONMENT)
-      env = ToyEnv(agent.WIDTH)
+      env = LoopEnv(agent.TOYENV_SIZE)
       state1 = tf.cast(env.reset(), tf.float32)
       # 0 action is 'NOOP'
       state2 = tf.cast(env.step(0)[0], tf.float32)
@@ -152,12 +150,8 @@ if __name__ == '__main__':
     agent_losses = []
     total_rewards = [0 for _ in envs]
 
-    #def sample_batch(replay_buffer, batch_size):
-    #  sample = random.sample(replay_buffer, batch_size)
-    #  return tf.stack(sample, 0)
 
-    replay_buffer = []
-
+    replay_buffer = PrioritizedReplayBuffer(BUFFER_SIZE, 0.001)
 
     while True: 
 
@@ -170,7 +164,14 @@ if __name__ == '__main__':
         next_states, rewards, dones = [], [], []
 
         for i in range(ENVS):
+          #atend = envs[i].coords[1] == 83
+          #print(envs[i].coords[1])
+          #if atend: 
+            #input('at edge')
+            #print(actions[i])
           observation, reward, done, info = envs[i].step(actions[i])
+          #if atend: input(observation)
+          #if envs[i].coords[1] == 0 and atend: input('looped!')
           if CLIP_REWARDS:
             if reward > 1: reward = 1.0
             if reward < -1: reward = -1.0
@@ -188,9 +189,9 @@ if __name__ == '__main__':
 
           statelists[i] = statelists[i][1:]
           statelists[i].append(observation)
-          state = tf.stack(statelists[i], -1)
-          state = tf.squeeze(state)
-          next_states.append(state)
+          next_state = tf.stack(statelists[i], -1)
+          next_state = tf.squeeze(next_state)
+          next_states.append(next_state)
           dones.append(float(done))
           rewards.append(reward)
 
@@ -204,6 +205,9 @@ if __name__ == '__main__':
 
         states = tf.stack(next_states)
 
+      states_l.append(states)
+      
+
       # compute value targets (discounted returns to end of episode (or end of training))
       #rewards_l[-1] += (1 - dones_l[-1]) * actor.policy_and_value(states)[1]
       with tf.device('/device:CPU:0'):
@@ -213,54 +217,59 @@ if __name__ == '__main__':
       print("Frames: %d" % ((cycle + 1) * STEPS_BETWEEN_TRAINING * ENVS))
       print("Param updates: %d" % (cycle * PARAM_UPDATES_PER_CYCLE))
 
-      zipped = zip(states_l, actions_l, rewards_l, dones_l)
+      '''
+      TODO this is changed
+      states_a, states_b, actions_a = [tf.stack(s) for s in [states_a, states_b, actions_a]]
+      states_a, states_b, = [s[:,:,:,-1] for s in [states_a, states_b, states_k]] # remove time dimension
+      states_a, states_b, = [tf.reshape(x, (ENVS * BATCH_SIZE, 2, 1)) for x in [states_a, states_b, states_k]]
+      '''
 
-      replay_buffer += zipped
-      if len(replay_buffer) > REPLAY_BUFFER_SIZE:
-        input('truncating replay_buffer')
-        replay_buffer = replay_buffer[len(replay_buffer) - REPLAY_BUFFER_SIZE:]
+      def dataGen():
+        for i in range(len(states_l) - 1):
+          for j in range(TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP):
+            # TODO should pick states_k from all states seen, not just most recent iteration?
+            states_k = states_l[random.randint(0,len(states_l) - 1)] 
+            envs_data = (states_l[i], states_l[i+1], states_k, actions_l[i], rewards_l[i], dones_l[i])
+            for e,_ in enumerate(envs):
+              dp = [ed[e] for ed in envs_data]
+              yield dp
+            
+
+      replay_buffer.addDatapoints(dataGen(), [1 for _ in range((len(states_l) - 1) * TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP * ENVS)])
+
+      def getBatch():
+        # TODO: there's an error here, doesn't take into account dones. Shouldn't matter for toy environment though.
+        b,indices = replay_buffer.sampleBatch(BATCH_SIZE)
+        states_a, states_b, states_k, actions_a, _, _ = zip(*b)
+        states_a, states_b, states_k, actions_a = [tf.stack(s) for s in [states_a, states_b, states_k, actions_a]]
+        states_a, states_b, states_k = [s[:,:,-1] for s in [states_a, states_b, states_k]] # remove time dimension
+        states_a, states_b, states_k = [tf.reshape(x, (BATCH_SIZE, 2, 1)) for x in [states_a, states_b, states_k]]
+        Dbk_target = target_actor.distance_states(states_b, states_k)
+        return (states_a, states_b, states_k, actions_a, Dbk_target), indices
       
 
       print('training distance')
-      indices = list(range(len(replay_buffer)))
       for b in range(PARAM_UPDATES_PER_CYCLE):
-        # TODO: there's an error here, doesn't take into account dones. Shouldn't matter for toy environment though.
-        batch_inds_a = random.choices(indices[:-1], k=BATCH_SIZE)
-        batch_inds_k = random.choices(indices, k=BATCH_SIZE)
-        states_a = [replay_buffer[i][0] for i in batch_inds_a]
-        states_b = [replay_buffer[i+1][0] for i in batch_inds_a]
-        states_k = [replay_buffer[i][0] for i in batch_inds_k]
-        actions_a = [replay_buffer[i][1] for i in batch_inds_a]
-        states_a, states_b, states_k, actions_a = [tf.stack(s) for s in [states_a, states_b, states_k, actions_a]]
-        #states_a, states_b, states_k = [s[:,:,:,:,0] for s in [states_a, states_b, states_k]] # remove time dimension
-        states_a, states_b, states_k = [s[:,:,:,-1] for s in [states_a, states_b, states_k]] # remove time dimension
-        # TODO should we even have parallel environments here?
-        #states_a, states_b, states_k = [tf.reshape(x, (ENVS * BATCH_SIZE, agent.WIDTH, agent.HEIGHT, 1)) for x in [states_a, states_b, states_k]]
-        states_a, states_b, states_k = [tf.reshape(x, (ENVS * BATCH_SIZE, 2, 1)) for x in [states_a, states_b, states_k]]
-        enca = actor.encode(states_a)
-        encb = actor.encode(states_b)
-        #print(actor.distance(enca, encb))
-    
-        actions_a = tf.reshape(actions_a, (ENVS * BATCH_SIZE,))
+     
+        (states_a, states_b, states_k, actions_a, Dbk_target), indices = getBatch()
 
         with tf.GradientTape(watch_accessed_variables=True) as tape:
-          #print(states_a[0,:])
-          #print(states_b[0,:])
-          #print(actions_a[0])
-          #input('continue...')
-          Dbk_target = target_actor.distance_states(states_b, states_k)
-          loss = actor.loss(states_a, states_b, states_k, actions_a, Dbk_target)
-          #print("{:6f}, {:6f}, {:6f}".format(loss_pve[0].numpy(), loss_pve[1].numpy(), loss_pve[2].numpy()))
+          loss, td_error = actor.loss(states_a, states_b, states_k, actions_a, Dbk_target)
           loss_str = ''.join('{:6f}, '.format(lossv) for lossv in loss)
         grad = tape.gradient(loss, actor.vars)
-        # TODO add this back!
         agentOpt.apply_gradients(zip(grad, actor.vars))
         agent_losses += [loss]
         printAccuracy(100, actor)
-        actionAccuracy(100, actor)
+        acc = actionAccuracy(env,100, actor)
+        accs += [acc]
+        # TODO add bck in
+        # important to convert td_error to numpy first,
+        # ovtherwise it takes forever
+        replay_buffer.updateWeights(indices, td_error.numpy())
+        maxtd = max(maxtd, tf.reduce_max(td_error))
+        print('MAX TD: ' + str(maxtd))
 
         print(loss_str)
-      #print(loss_str)
 
 
       if USE_TARGET:
@@ -275,6 +284,8 @@ if __name__ == '__main__':
           pickle.dump(agent_losses, fp)
         with open(agent.rewards_savepath, "wb") as fp:
           pickle.dump(episode_rewards, fp)
+        with open(agent.accs_savepath, "wb") as fp:
+          pickle.dump(accs, fp)
 
       
   

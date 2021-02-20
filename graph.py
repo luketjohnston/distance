@@ -11,9 +11,11 @@ loss_savepath = os.path.join(dir_path, 'loss.pickle')
 import agent
 
 
-with open(agent.loss_savepath, "rb") as f: 
+with open(agent.accs_savepath, "rb") as f: 
   rewards = pickle.load(f)
 
+
+input(rewards[:100])
 
 fig, ax = plt.subplots()
 ax.plot(rewards)
