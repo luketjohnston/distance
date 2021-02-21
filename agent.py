@@ -21,7 +21,7 @@ ENVIRONMENT = 'MontezumaRevenge-v0'
 ENVIRONMENT = 'PongDeterministic-v4'
 #ENVIRONMENT = 'CartPole-v1'
 env = gym.make(ENVIRONMENT)
-TOYENV_SIZE = 8
+TOYENV_SIZE = 20
 env = LoopEnv(TOYENV_SIZE)
 
 

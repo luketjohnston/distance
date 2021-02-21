@@ -37,6 +37,7 @@ CLIP_REWARDS = True
 #LR = 0.0001
 #LR = 0.00001 
 LR = 0.000003 # this is the best so far for toyenv, diverges at an order of magnitude higher.
+#LR = 0.00003 # diverges here!
 #LR = 0.003
 
 USE_TARGET = False
@@ -44,8 +45,8 @@ USE_TARGET = False
 SAVE_CYCLES = 1
 BATCH_SIZE = 128
 ENVS = 2
-STEPS_BETWEEN_TRAINING = 2**10
-PARAM_UPDATES_PER_CYCLE = 100000
+STEPS_BETWEEN_TRAINING = 512
+PARAM_UPDATES_PER_CYCLE = 5000
 
 TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP  = 4
 
@@ -86,8 +87,7 @@ if __name__ == '__main__':
   if True:
 
     with open(agent.loss_savepath, "rb") as f: 
-      agentloss = []
-      #agentloss = pickle.load(f)
+      agentloss = pickle.load(f)
     with open(agent.accs_savepath, "rb") as f: 
       accs = pickle.load(f)
     with open(agent.rewards_savepath, "rb") as f:
@@ -159,7 +159,11 @@ if __name__ == '__main__':
       states_l, actions_l, rewards_l, dones_l = [],[],[],[]
       print('acting')
 
-      for step in range(STEPS_BETWEEN_TRAINING):
+      if cycle == 0:
+        cycle_steps = BUFFER_SIZE
+      else:
+        cycle_steps = STEPS_BETWEEN_TRAINING
+      for step in range(cycle_steps):
         actions = np.random.randint(0,5,size=(ENVS,))
         next_states, rewards, dones = [], [], []
 
@@ -235,7 +239,8 @@ if __name__ == '__main__':
               yield dp
             
 
-      replay_buffer.addDatapoints(dataGen(), [1 for _ in range((len(states_l) - 1) * TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP * ENVS)])
+      #replay_buffer.addDatapoints(dataGen(), [1 for _ in range((len(states_l) - 1) * TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP * ENVS)])
+      replay_buffer.addDatapoints(dataGen())
 
       def getBatch():
         # TODO: there's an error here, doesn't take into account dones. Shouldn't matter for toy environment though.
