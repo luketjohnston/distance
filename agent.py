@@ -24,6 +24,9 @@ env = gym.make(ENVIRONMENT)
 TOYENV_SIZE = 20
 env = LoopEnv(TOYENV_SIZE)
 
+ALPHA = 3
+BETA = 0
+
 
 
 ACTIONS = env.action_space.n
@@ -154,8 +157,12 @@ class Agent(tf.Module):
     return self.distance(enc1, enc2)
 
 
-  @tf.function(input_signature=(IMSPEC, IMSPEC, IMSPEC, INTSPEC, DISTSPEC))
-  def loss(self, states_a, states_b, states_k, action, Dbk_target):
+  @tf.function(input_signature=(IMSPEC, IMSPEC, IMSPEC, INTSPEC, DISTSPEC, FLOATSPEC))
+  def loss(self, states_a, states_b, states_k, action, Dbk_target, probs):
+    tf.print('states a,b,k')
+    tf.print(states_a)
+    tf.print(states_b)
+    tf.print(states_k)
     enca, encb, enck = [self.encode(x) for x in [states_a, states_b, states_k]]
     
     Dak = self.distance(enca, enck)
@@ -171,11 +178,22 @@ class Agent(tf.Module):
     target = target * mask
     target = tf.stop_gradient(1 + DISCOUNT * target)
 
-    TD_error = tf.abs(Dak_a - target)
+    # apply importance sampling to the target
+    weights = tf.pow(probs, -BETA)
+    weights /= tf.reduce_max(weights)
+    tf.print('probs and weights')
+    tf.print(probs)
+    tf.print(weights)
 
-    loss_TD = tf.reduce_mean(tf.pow(Dak_a - target, 2))
+    TD_error = tf.abs(Dak_a - target) 
+    TD_error = tf.pow(TD_error, ALPHA)
+
+    # TODO is this right?
+    loss_TD = tf.reduce_mean(tf.pow(weights * (Dak_a - target), 2))
     #loss = tf.reduce_mean(tf.abs(Dak_a - target))
-    loss_ab = tf.reduce_mean(tf.pow(Dab_a - 1, 2))
+    # TODO having this update in here is going to mess things up when 
+    # transitions are stochastic 
+    loss_ab = tf.reduce_mean(tf.pow(weights * (Dab_a - 1), 2))
     #loss += tf.reduce_mean(tf.abs(Dab_a - 1))
     
 

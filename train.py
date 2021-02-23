@@ -22,7 +22,15 @@ LOAD_SAVE = True
 
 ''' TODO problem: after training for a long time, seems that things 
 diverged quite far. There were some negative distances, many distances
-were just way off, action accurracy greatly decreases...'''
+were just way off, action accurracy greatly decreases...
+
+with alpha = 3 beta = 0, can use higher learning rate, and doesn't diverge (will temorarily diverge but always goes back)
+
+'''
+
+
+''' it seems to be working, but the training weights are so small for the
+often seen transitions, they are never learned '''
 
 OPTIMIZER = 'SGD' # 'Adam' or 'RMSprop' or 'SGD'
 OPTIMIZER = 'RMSprop' # 'Adam' or 'RMSprop' or 'SGD'
@@ -54,20 +62,7 @@ TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP  = 4
 
 
 '''
-TODO #1: implement prioritized experience replay
 
-in LoopEnv, network reaches ~95 accuracy on best action,
-but distance from right to left is much higher than it should be.
-(~65 rather than 1). I suspect this is because these transitions
-are rarely seen in comparison to all the other ones.
-- can test this by only saving unique transitions in experience replay
-
-training seems to diverge with
-rmsprop, I suspect its because of momentum failing when gradient
-is super small?" TODO this is something we can test
-
-FOR learning constant function = 1, best bet is rmsprop 0.003,
-and I was using l2 loss
 
 Here's a possible explanation for explosions:
 if we are collecting data, let's say the last states we visit are a,a,a. And we 
@@ -244,22 +239,22 @@ if __name__ == '__main__':
 
       def getBatch():
         # TODO: there's an error here, doesn't take into account dones. Shouldn't matter for toy environment though.
-        b,indices = replay_buffer.sampleBatch(BATCH_SIZE)
+        b,indices,probs = replay_buffer.sampleBatch(BATCH_SIZE)
         states_a, states_b, states_k, actions_a, _, _ = zip(*b)
         states_a, states_b, states_k, actions_a = [tf.stack(s) for s in [states_a, states_b, states_k, actions_a]]
         states_a, states_b, states_k = [s[:,:,-1] for s in [states_a, states_b, states_k]] # remove time dimension
         states_a, states_b, states_k = [tf.reshape(x, (BATCH_SIZE, 2, 1)) for x in [states_a, states_b, states_k]]
         Dbk_target = target_actor.distance_states(states_b, states_k)
-        return (states_a, states_b, states_k, actions_a, Dbk_target), indices
+        return (states_a, states_b, states_k, actions_a, Dbk_target), indices, probs
       
 
       print('training distance')
       for b in range(PARAM_UPDATES_PER_CYCLE):
      
-        (states_a, states_b, states_k, actions_a, Dbk_target), indices = getBatch()
+        (states_a, states_b, states_k, actions_a, Dbk_target), indices, probs = getBatch()
 
         with tf.GradientTape(watch_accessed_variables=True) as tape:
-          loss, td_error = actor.loss(states_a, states_b, states_k, actions_a, Dbk_target)
+          loss, td_error = actor.loss(states_a, states_b, states_k, actions_a, Dbk_target, probs)
           loss_str = ''.join('{:6f}, '.format(lossv) for lossv in loss)
         grad = tape.gradient(loss, actor.vars)
         agentOpt.apply_gradients(zip(grad, actor.vars))

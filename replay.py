@@ -27,16 +27,18 @@ class PrioritizedReplayBuffer():
         k = 2*k+2
         w -= left
     # found leaf
-    return self.data[k - self.n + 1], k 
+    return self.data[k - self.n + 1], k, self.sumtree[k]
 
   def sampleBatch(self, batch_size):
     batch = []
+    probs = []
     indices = []
     for _ in range(batch_size):
-      d,i = self.sample() 
+      d,i,p = self.sample() 
       batch.append(d)
       indices.append(i)
-    return batch, indices
+      probs.append(p)
+    return batch, indices, probs
 
   # indices are the indices into sumtree, as returned by sampleBatch
   def updateWeights(self, indices, weights):
