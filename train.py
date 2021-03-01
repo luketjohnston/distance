@@ -20,17 +20,10 @@ from test import actionAccuracy, printAccuracy
 
 LOAD_SAVE = True
 
-''' TODO problem: after training for a long time, seems that things 
-diverged quite far. There were some negative distances, many distances
-were just way off, action accurracy greatly decreases...
-
+''' 
 with alpha = 3 beta = 0, can use higher learning rate, and doesn't diverge (will temorarily diverge but always goes back)
 
 '''
-
-
-''' it seems to be working, but the training weights are so small for the
-often seen transitions, they are never learned '''
 
 OPTIMIZER = 'SGD' # 'Adam' or 'RMSprop' or 'SGD'
 OPTIMIZER = 'RMSprop' # 'Adam' or 'RMSprop' or 'SGD'
@@ -45,8 +38,9 @@ CLIP_REWARDS = True
 #LR = 0.0001
 #LR = 0.00001 
 LR = 0.000003 # this is the best so far for toyenv, diverges at an order of magnitude higher.
-#LR = 0.00003 # diverges here!
-#LR = 0.003
+LR = 0.00003 # diverges here! UNLESS we use experience replay and then it seems to work ok
+#LR = 0.0003 
+#LR = 0.0003
 
 USE_TARGET = False
 
@@ -54,9 +48,9 @@ SAVE_CYCLES = 1
 BATCH_SIZE = 128
 ENVS = 2
 STEPS_BETWEEN_TRAINING = 512
-PARAM_UPDATES_PER_CYCLE = 5000
+PARAM_UPDATES_PER_CYCLE = 500
 
-TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP  = 4
+TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP  = 20
 
 ''' without replay_buffer.updateWeights, get to 95% acc in 25k updates '''
 
@@ -92,9 +86,12 @@ if __name__ == '__main__':
       #actor = tf.saved_model.load(agent.model_savepath)
       actor = tf.saved_model.load(agent.model_savepath)
       target_actor = agent.Agent() if USE_TARGET else actor
+        
       #sess.run(tf.compat.v1.global_variables_initializer())
     else:
+      tf.config.run_functions_eagerly(True) 
       actor = agent.Agent()
+      target_actor = agent.Agent() if USE_TARGET else actor
     
     if OPTIMIZER == 'Adam':
       agentOpt = tf.keras.optimizers.Adam(learning_rate = LR)
@@ -119,7 +116,7 @@ if __name__ == '__main__':
     for i in range(ENVS):
  
       #env = gym.make(agent.ENVIRONMENT)
-      env = LoopEnv(agent.TOYENV_SIZE)
+      env = ToyEnv(agent.TOYENV_SIZE, agent.USE_COORDS)
       state1 = tf.cast(env.reset(), tf.float32)
       # 0 action is 'NOOP'
       state2 = tf.cast(env.step(0)[0], tf.float32)
@@ -131,7 +128,7 @@ if __name__ == '__main__':
       #statelist = [tf.image.resize(s,(84,110)) for s in statelist] #TODO does method of downsampling matter?
       #statelist = [s / 255.0 for s in statelist]
       state = tf.stack(statelist, -1)
-      state = tf.squeeze(state)
+      #state = tf.squeeze(state)
       envs += [env]
       states.append(state)
       statelists += [statelist]
@@ -155,7 +152,7 @@ if __name__ == '__main__':
       print('acting')
 
       if cycle == 0:
-        cycle_steps = BUFFER_SIZE
+        cycle_steps = BUFFER_SIZE // TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP
       else:
         cycle_steps = STEPS_BETWEEN_TRAINING
       for step in range(cycle_steps):
@@ -189,7 +186,7 @@ if __name__ == '__main__':
           statelists[i] = statelists[i][1:]
           statelists[i].append(observation)
           next_state = tf.stack(statelists[i], -1)
-          next_state = tf.squeeze(next_state)
+          #next_state = tf.squeeze(next_state)
           next_states.append(next_state)
           dones.append(float(done))
           rewards.append(reward)
@@ -199,7 +196,7 @@ if __name__ == '__main__':
         if True:
           states_l.append(tf.identity(states))
           actions_l.append(tf.identity(actions))
-          rewards_l.append(tf.squeeze(tf.stack(rewards)))
+          rewards_l.append(tf.stack(rewards))
           dones_l.append(tf.stack(dones))
 
         states = tf.stack(next_states)
@@ -242,24 +239,23 @@ if __name__ == '__main__':
         b,indices,probs = replay_buffer.sampleBatch(BATCH_SIZE)
         states_a, states_b, states_k, actions_a, _, _ = zip(*b)
         states_a, states_b, states_k, actions_a = [tf.stack(s) for s in [states_a, states_b, states_k, actions_a]]
-        states_a, states_b, states_k = [s[:,:,-1] for s in [states_a, states_b, states_k]] # remove time dimension
-        states_a, states_b, states_k = [tf.reshape(x, (BATCH_SIZE, 2, 1)) for x in [states_a, states_b, states_k]]
+        states_a, states_b, states_k = [s[...,-1:] for s in [states_a, states_b, states_k]] # remove time dimension
+        states_a, states_b, states_k = [tf.reshape(x, [BATCH_SIZE] + agent.INPUT_SHAPE) for x in [states_a, states_b, states_k]]
         Dbk_target = target_actor.distance_states(states_b, states_k)
-        return (states_a, states_b, states_k, actions_a, Dbk_target), indices, probs
+        return (states_a, states_b, states_k, actions_a, Dbk_target), indices, tf.cast(probs, tf.float32)
       
 
       print('training distance')
       for b in range(PARAM_UPDATES_PER_CYCLE):
-     
         (states_a, states_b, states_k, actions_a, Dbk_target), indices, probs = getBatch()
-
         with tf.GradientTape(watch_accessed_variables=True) as tape:
           loss, td_error = actor.loss(states_a, states_b, states_k, actions_a, Dbk_target, probs)
+
           loss_str = ''.join('{:6f}, '.format(lossv) for lossv in loss)
         grad = tape.gradient(loss, actor.vars)
         agentOpt.apply_gradients(zip(grad, actor.vars))
         agent_losses += [loss]
-        printAccuracy(100, actor)
+        #printAccuracy(env, 100, actor)
         acc = actionAccuracy(env,100, actor)
         accs += [acc]
         # TODO add bck in
@@ -267,7 +263,7 @@ if __name__ == '__main__':
         # ovtherwise it takes forever
         replay_buffer.updateWeights(indices, td_error.numpy())
         maxtd = max(maxtd, tf.reduce_max(td_error))
-        print('MAX TD: ' + str(maxtd))
+        #print('MAX TD: ' + str(maxtd))
 
         print(loss_str)
 

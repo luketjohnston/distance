@@ -21,24 +21,22 @@ ENVIRONMENT = 'MontezumaRevenge-v0'
 ENVIRONMENT = 'PongDeterministic-v4'
 #ENVIRONMENT = 'CartPole-v1'
 env = gym.make(ENVIRONMENT)
-TOYENV_SIZE = 20
-env = LoopEnv(TOYENV_SIZE)
+TOYENV_SIZE = 10
+USE_COORDS = False
+env = ToyEnv(TOYENV_SIZE, USE_COORDS)
 
-ALPHA = 3
+ALPHA = 2
 BETA = 0
+
+
+if USE_COORDS:
+  INPUT_SHAPE = [2]
+else:
+  INPUT_SHAPE = [TOYENV_SIZE, TOYENV_SIZE, 1]
 
 
 
 ACTIONS = env.action_space.n
-
-WIDTH = 84
-HEIGHT = 110
-DEPTH = 4
-
-WIDTH = 84
-HEIGHT = 84
-DEPTH = 1
-
 
 ENT_EPSILON = 1e-7
 
@@ -46,21 +44,23 @@ HIDDEN_NEURONS=128
 
 REGULARIZATION_WEIGHT = 0
 
-FILTER_SIZES = [8, 4, 3]
-#FILTER_SIZES = []
+FILTER_SIZES = [9, 5, 3]
 CHANNELS =     [32,64,64]
-#CHANNELS = []
 STRIDES =     [4,2,1]
-#STRIDES = []
 
-ENCODING_SIZE = 2
+FILTER_SIZES = [7, 3]
+CHANNELS =     [32,32]
+STRIDES =     [4,1]
+FILTER_SIZES = []
+CHANNELS = []
+STRIDES = []
+
+ENCODING_SIZE = 32
 
 
-IMSPEC = tf.TensorSpec([None, WIDTH, HEIGHT, DEPTH],)
+IMSPEC = tf.TensorSpec([None] + INPUT_SHAPE,)
 if ENVIRONMENT == 'CartPole-v1':
   IMSPEC = tf.TensorSpec([None, 4])
-# FOR distance proof - of - concept
-IMSPEC = tf.TensorSpec([None, 2,1],)
 
 INTSPEC = tf.TensorSpec([None], dtype=tf.int64)
 FLOATSPEC = tf.TensorSpec([None],)
@@ -100,8 +100,15 @@ class Agent(tf.Module):
     super(Agent, self).__init__()
     self.vars = []
 
+    size = INPUT_SHAPE
+    if ENVIRONMENT == 'CartPole-v1':
+      size = (4,1,1)
+    for (f, c, s) in zip(FILTER_SIZES, CHANNELS, STRIDES):
+      # first conv layer
+      self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(f,f,size[2],c)), name='agent_conv'))
+      size = getConvOutputSizeValid(size[0], size[1], f, c, s)
 
-    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(2,HIDDEN_NEURONS)), name='Encoder_w'))
+    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(np.prod(size),HIDDEN_NEURONS)), name='Encoder_w'))
     self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(HIDDEN_NEURONS,)), name='Encoder_b'))
     self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(HIDDEN_NEURONS,ENCODING_SIZE)), name='Encoder_o'))
     self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(ENCODING_SIZE,)), name='Encoder_bo'))
@@ -117,37 +124,34 @@ class Agent(tf.Module):
   def encode(self, states):
     mvars = self.vars
     x = states
-    #for i in range(len(CHANNELS)):
-    #  filt = mvars[i]
-    #  stride = STRIDES[i]
-    #  x = tf.nn.conv2d(x,filt,stride,'VALID',name=None)
-    #  x = tf.nn.leaky_relu(x)
+    #return x
+    for i in range(len(CHANNELS)):
+      filt = mvars[i]
+      stride = STRIDES[i]
+      x = tf.nn.conv2d(x,filt,stride,'VALID',name=None)
+      x = tf.nn.leaky_relu(x)
     x = tf.keras.layers.Flatten()(x)
-    #vi = len(CHANNELS)
+    vi = len(CHANNELS)
     #vi = 0
-    #w, b = mvars[vi:vi+2]
-    #encoding= tf.nn.leaky_relu(tf.einsum('ba,ah->bh', x,w) + b)
-    #w,b = mvars[vi+2:vi+4]
-    #encoding = tf.nn.leaky_relu(tf.squeeze(tf.einsum('ba,ao->bo',encoding,w))  + b)
-    return x
+    w, b = mvars[vi:vi+2]
+    encoding = tf.nn.leaky_relu(tf.einsum('ba,ah->bh', x,w) + b)
+    w,b = mvars[vi+2:vi+4]
+    encoding = tf.nn.leaky_relu(tf.einsum('ba,ao->bo',encoding,w)  + b)
+    return encoding
 
   ''' Takes two state encodings as input, and returns the distance between them for each action taken a'''
   @tf.function(input_signature=(ENCSPEC,ENCSPEC))
   def distance(self, enc1, enc2):
     # let's just start with something simple...
-    #mvars = self.vars[len(CHANNELS) + 4:]
-    mvars = self.vars[4:]
+    mvars = self.vars[len(CHANNELS) + 4:]
+    #mvars = self.vars[4:]
     x = tf.concat([enc1, enc2], axis=-1)
     w,b = mvars[:2]
     distance= tf.nn.leaky_relu(tf.einsum('ba,ah->bh', x,w) + b)
     w,b = mvars[2:4]
-    distance = tf.squeeze(tf.einsum('ba,ao->bo',distance,w))  + b
+    distance = tf.einsum('ba,ao->bo',distance,w)  + b
     # TODO should this be RELU instead?
-    #tf.print('here')
-    #tf.print(enc1[0,:])
-    #tf.print(enc2[0,:])
     #r = tf.stack([tf.reduce_sum(tf.abs(enc1 - enc2), -1) for _ in range(ACTIONS)], -1)
-    #tf.print(r)
     return distance
 
   @tf.function(input_signature=(IMSPEC, IMSPEC))
@@ -159,10 +163,6 @@ class Agent(tf.Module):
 
   @tf.function(input_signature=(IMSPEC, IMSPEC, IMSPEC, INTSPEC, DISTSPEC, FLOATSPEC))
   def loss(self, states_a, states_b, states_k, action, Dbk_target, probs):
-    tf.print('states a,b,k')
-    tf.print(states_a)
-    tf.print(states_b)
-    tf.print(states_k)
     enca, encb, enck = [self.encode(x) for x in [states_a, states_b, states_k]]
     
     Dak = self.distance(enca, enck)
@@ -171,19 +171,14 @@ class Agent(tf.Module):
     Dab_a = tf.gather(Dab, action, batch_dims=1)
 
     # check if k == b. If so, target Dbk needs to be 0
-    # TODO need to chance axis back to (1,2,3) for images
     target = tf.reduce_min(Dbk_target, axis=-1)
-    mask = tf.squeeze(tf.reduce_max(tf.cast(tf.not_equal(states_b, states_k), tf.float32), axis=1))
-
+    mask = tf.squeeze(tf.reduce_max(tf.cast(tf.not_equal(encb, enck), tf.float32), axis=1))
     target = target * mask
     target = tf.stop_gradient(1 + DISCOUNT * target)
 
     # apply importance sampling to the target
     weights = tf.pow(probs, -BETA)
     weights /= tf.reduce_max(weights)
-    tf.print('probs and weights')
-    tf.print(probs)
-    tf.print(weights)
 
     TD_error = tf.abs(Dak_a - target) 
     TD_error = tf.pow(TD_error, ALPHA)
@@ -202,6 +197,13 @@ class Agent(tf.Module):
       #regloss += REGULARIZATION_WEIGHT * tf.reduce_sum(tf.pow(x, 2))
       regloss += REGULARIZATION_WEIGHT * tf.reduce_sum(tf.abs(x))
 
+    #tf.print('a,b,k, dak, dab, dbk_target')
+    #tf.print(states_a)
+    #tf.print(states_b)
+    #tf.print(states_k)
+    #tf.print(Dak)
+    #tf.print(Dab)
+    #tf.print(Dbk_target)
 
     return (loss_TD, loss_ab, regloss), TD_error
     

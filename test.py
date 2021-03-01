@@ -5,19 +5,19 @@ import tensorflow as tf
 import agent
 from toyenv import LoopEnv
 
-def printAccuracy(batch_size, actor):
+def printAccuracy(env, batch_size, actor):
   coords = np.random.randint(0,agent.TOYENV_SIZE,size=(batch_size, 2, 2, 1))
-  #obs = np.zeros((batch_size, 2, agent.TOYENV_SIZE, agent.HEIGHT))
-  #obs[np.arange(batch_size), 0, coords[:,0,0], coords[:,0,1]] = 1
-  #obs[np.arange(batch_size), 1, coords[:,1,0], coords[:,1,1]] = 1
+  obs = np.zeros((batch_size, 2, env.n, env.n, 1))
+  obs[np.arange(batch_size), 0, coords[:,0,0,0], coords[:,0,1,0], 0] = 1
+  obs[np.arange(batch_size), 1, coords[:,1,0,0], coords[:,1,1,0], 0] = 1
   # TODO This isn't eactly correct, distance from state to same state will be 1, not 0
-  truths = np.sum(np.abs(coords[:,0,:] - coords[:,1,:]), axis=-2)
+  truths = np.sum(np.abs(coords[:,0,:,:] - coords[:,1,:,:]), axis=-2)
   #obs = tf.cast(obs, tf.float32)
   #obs = tf.expand_dims(obs, -1)
-  #enc1 = actor.encode(obs[:,0,:,:,:])
-  #enc2 = actor.encode(obs[:,1,:,:,:])
-  enc1 = actor.encode(coords[:,0,:])
-  enc2 = actor.encode(coords[:,1,:])
+  enc1 = actor.encode(obs[:,0,:,:,:])
+  enc2 = actor.encode(obs[:,1,:,:,:])
+  #enc1 = actor.encode(coords[:,0,:])
+  #enc2 = actor.encode(coords[:,1,:])
   dists = actor.distance(enc1, enc2)
   dists = tf.reduce_min(dists, axis=-1)
   truths = tf.cast(tf.squeeze(truths), tf.float32)
@@ -26,15 +26,17 @@ def printAccuracy(batch_size, actor):
   return ave_err
 
 def actionAccuracy(env, batch_size, actor):
-  coords = np.random.randint(0,agent.TOYENV_SIZE,size=(batch_size, 2, 2, 1))
-  enc1 = actor.encode(coords[:,0,:])
-  enc2 = actor.encode(coords[:,1,:])
+  coords1 = np.random.randint(0,env.n,size=(batch_size, 2))
+  coords2 = np.random.randint(0,env.n,size=(batch_size, 2))
+  obs1,obs2 = env.coordsToObs(coords1), env.coordsToObs(coords2)
+  obs1,obs2 = np.expand_dims(obs1, -1), np.expand_dims(obs2, -1)
+  enc1,enc2 = actor.encode(obs1), actor.encode(obs2)
   dists = actor.distance(enc1, enc2)
   actions = tf.math.argmin(dists, axis=-1).numpy()
   correct = 0
   for i in range(batch_size):
     action = actions[i]
-    correct += int(action in env.correctActions(coords[i,0], coords[i,1]))
+    correct += int(action in env.correctActions(coords1[i], coords2[i]))
   acc = correct / batch_size
   print('action acc: ' + str(acc))
   return acc
@@ -70,10 +72,12 @@ def printSelfDist(actor):
 if __name__ == '__main__':
   actor = tf.saved_model.load(agent.model_savepath)
   env = LoopEnv(agent.TOYENV_SIZE)
-  printLargestDist(actor)
-  input('above is largest')
-  printSelfDist(actor)
-  input('above is self dist')
+  #env = LoopEnv(4)
+  #printLargestDist(actor)
+  #input('above is largest')
+  #printSelfDist(actor)
+  #input('above is self dist')
+  #actionAccuracy(env,3,actor)
   #while True:
 
   #  coords = np.random.randint(0,agent.TOYENV_SIZE,size=(128, 2, 2, 1))
@@ -92,15 +96,17 @@ if __name__ == '__main__':
   #      print('correct...')
   
 
-  ul = [[[0],[0]]]
-  ur = [[[0],[agent.TOYENV_SIZE -1]]]
-  bl = [[[agent.TOYENV_SIZE-1],[0]]]
-  br = [[[agent.TOYENV_SIZE-1],[agent.TOYENV_SIZE-1]]]
+  #ul = [[[0],[0]]]
+  #ur = [[[0],[agent.TOYENV_SIZE -1]]]
+  #bl = [[[agent.TOYENV_SIZE-1],[0]]]
+  #br = [[[agent.TOYENV_SIZE-1],[agent.TOYENV_SIZE-1]]]
 
   states = [[None for _ in range(agent.TOYENV_SIZE)] for _ in range(agent.TOYENV_SIZE)]
   for i in range(agent.TOYENV_SIZE):
     for j in range(agent.TOYENV_SIZE):
-      states[i][j] = [[[i],[j]]]
+      obs = np.zeros((1, agent.TOYENV_SIZE, agent.TOYENV_SIZE, 1))
+      obs[0,i,j,0] = 1
+      states[i][j] = obs
   def dist(t1,t2):
     i1, j1 = t1
     i2,j2 = t2
