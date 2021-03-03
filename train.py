@@ -32,7 +32,7 @@ with alpha = 3 beta = 0, can use higher learning rate, and doesn't diverge (will
 OPTIMIZER = 'SGD' # 'Adam' or 'RMSprop' or 'SGD'
 OPTIMIZER = 'RMSprop' # 'Adam' or 'RMSprop' or 'SGD'
 
-BUFFER_SIZE = 2**18
+BUFFER_SIZE = 2**14
 #BUFFER_SIZE = 8
 
 CLIP_REWARDS = True
@@ -107,48 +107,44 @@ if __name__ == '__main__':
     states = []
     statelists = []
 
+    # TODO: implement tf.data for optimization
+    def preprocess(s):
+      s = tf.image.rgb_to_grayscale(s)
+      s = tf.image.resize(s,(agent.INPUT_SHAPE[0],agent.INPUT_SHAPE[1]))
+      return tf.cast(s / 255.0, tf.float32)
+
     # make environment
     for i in range(ENVS):
  
-      #env = gym.make(agent.ENVIRONMENT)
-      env = LoopEnv(agent.TOYENV_SIZE, agent.USE_COORDS)
+      env = gym.make(agent.ENVIRONMENT)
+      #env = LoopEnv(agent.TOYENV_SIZE, agent.USE_COORDS)
       state1 = tf.cast(env.reset(), tf.float32)
       # 0 action is 'NOOP'
       state2 = tf.cast(env.step(0)[0], tf.float32)
       state3 = tf.cast(env.step(0)[0], tf.float32)
       state4 = tf.cast(env.step(0)[0], tf.float32)
       statelist = [state1, state2, state3, state4]
-      # TODO: abstract away environment pre-processing
-      #statelist = [tf.image.rgb_to_grayscale(s) for s in statelist]
-      #statelist = [tf.image.resize(s,(84,110)) for s in statelist] #TODO does method of downsampling matter?
-      #statelist = [s / 255.0 for s in statelist]
+      statelist = [preprocess(s) for s in statelist]
       state = tf.stack(statelist, -1)
-      #state = tf.squeeze(state)
       envs += [env]
       states.append(state)
       statelists += [statelist]
 
     states = tf.stack(states)
 
-    
-    
-    
     cycle = 0
     agent_losses = []
     total_rewards = [0 for _ in envs]
-
 
     states_buffer = PrioritizedReplayBuffer(BUFFER_SIZE, 0.001)
     replay_buffer = PrioritizedReplayBuffer(BUFFER_SIZE, 0.001)
 
     while True: 
 
-
       states_l, actions_l, rewards_l, dones_l = [],[],[],[]
       print('acting')
 
       if cycle == 0:
-        #cycle_steps = BUFFER_SIZE // TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP // ENVS
         cycle_steps = BUFFER_SIZE // ENVS
       else:
         cycle_steps = STEPS_BETWEEN_TRAINING
@@ -157,23 +153,12 @@ if __name__ == '__main__':
         next_states, rewards, dones = [], [], []
 
         for i in range(ENVS):
-          #atend = envs[i].coords[1] == 83
-          #print(envs[i].coords[1])
-          #if atend: 
-            #input('at edge')
-            #print(actions[i])
           observation, reward, done, info = envs[i].step(actions[i])
-          #if atend: input(observation)
-          #if envs[i].coords[1] == 0 and atend: input('looped!')
           if CLIP_REWARDS:
             if reward > 1: reward = 1.0
             if reward < -1: reward = -1.0
           total_rewards[i] += reward
-
-          #observation = tf.image.rgb_to_grayscale(observation)
-          #observation = tf.image.resize(observation,(84,110)) 
-          #observation = observation / 255.0
-          observation = tf.cast(observation, tf.float32)
+          observation = preprocess(observation)
           if (done): 
             envs[i].reset()
             episode_rewards += [total_rewards[i]]
@@ -183,7 +168,6 @@ if __name__ == '__main__':
           statelists[i] = statelists[i][1:]
           statelists[i].append(observation)
           next_state = tf.stack(statelists[i], -1)
-          #next_state = tf.squeeze(next_state)
           next_states.append(next_state)
           dones.append(float(done))
           rewards.append(reward)
@@ -223,17 +207,14 @@ if __name__ == '__main__':
           for i in range(len(states_l) - 1):
             envs_data = (states_l[i], states_l[i+1], actions_l[i], rewards_l[i], dones_l[i])
             for e,_ in enumerate(envs):
+              # TODO this is ok right? only add transitions that don't end the episode?
+              if not dones_l[i][e]:
                 dp = [ed[e] for ed in envs_data]
                 yield dp
               
 
         #replay_buffer.addDatapoints(dataGen(), [1 for _ in range((len(states_l) - 1) * TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP * ENVS)])
-        if cycle > 0:
-          replay_buffer.addDatapoints(dataGen())
-        else:
-          for i,d in enumerate(dataGen()):
-            replay_buffer.data[i] = d
-            replay_buffer.sumtree[i] = replay_buffer.max_error + replay_buffer.epsilon
+        replay_buffer.addDatapoints(dataGen())
 
         for e in range(ENVS):
           states_buffer.addDatapoints([s[e] for s in states_l])
@@ -246,7 +227,9 @@ if __name__ == '__main__':
           # TODO should I use the k_probs?
           states_k, k_indices, k_probs = states_buffer.sampleBatch(BATCH_SIZE)
           states_a, states_b, states_k, actions_a = [tf.stack(s) for s in [states_a, states_b, states_k, actions_a]]
-          states_a, states_b, states_k = [s[...,-1:] for s in [states_a, states_b, states_k]] # remove time dimension
+          if agent.TOY_ENV:
+            states_a, states_b, states_k = [s[...,-1:] for s in [states_a, states_b, states_k]] # remove time dimension
+          #is this necessary?
           states_a, states_b, states_k = [tf.reshape(x, [BATCH_SIZE] + agent.INPUT_SHAPE) for x in [states_a, states_b, states_k]]
           Dbk_target = target_actor.distance_states(states_b, states_k)
           return (states_a, states_b, states_k, actions_a, Dbk_target), indices, tf.cast(probs, tf.float32)
@@ -263,9 +246,9 @@ if __name__ == '__main__':
         agentOpt.apply_gradients(zip(grad, actor.vars))
         agent_losses += [loss]
         #printAccuracy(env, 100, actor)
-        acc = actionAccuracy(env,100, actor)
-        accs += [acc]
-        # TODO add bck in
+        if agent.TOY_ENV:
+          acc = actionAccuracy(env,100, actor)
+          accs += [acc]
         # important to convert td_error to numpy first,
         # ovtherwise it takes forever
         replay_buffer.updateWeights(indices, td_error.numpy())
