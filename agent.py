@@ -18,14 +18,14 @@ tf.config.experimental.set_memory_growth(physical_devices[0], True)
 
 
 ENVIRONMENT = 'MontezumaRevenge-v0'
-ENVIRONMENT = 'PongDeterministic-v4'
+#ENVIRONMENT = 'PongDeterministic-v4'
 #ENVIRONMENT = 'CartPole-v1'
 env = gym.make(ENVIRONMENT)
-TOYENV_SIZE = 10
+TOYENV_SIZE = 20
 USE_COORDS = False
-env = ToyEnv(TOYENV_SIZE, USE_COORDS)
+env = LoopEnv(TOYENV_SIZE, USE_COORDS)
 
-ALPHA = 2
+ALPHA = 3
 BETA = 0
 
 
@@ -55,7 +55,7 @@ FILTER_SIZES = []
 CHANNELS = []
 STRIDES = []
 
-ENCODING_SIZE = 32
+ENCODING_SIZE = 64
 
 
 IMSPEC = tf.TensorSpec([None] + INPUT_SHAPE,)

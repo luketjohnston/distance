@@ -25,36 +25,31 @@ with alpha = 3 beta = 0, can use higher learning rate, and doesn't diverge (will
 
 '''
 
+#TOYENV, 20x20
+#ALPHA = 2
+#ALPHA = 0
+
 OPTIMIZER = 'SGD' # 'Adam' or 'RMSprop' or 'SGD'
 OPTIMIZER = 'RMSprop' # 'Adam' or 'RMSprop' or 'SGD'
 
-BUFFER_SIZE = 2**13
+BUFFER_SIZE = 2**18
 #BUFFER_SIZE = 8
 
 CLIP_REWARDS = True
 #LR = 0.000001 #use this for fully connected
 #LR = 0.001 # this is tf default
-#LR = 0.01
-#LR = 0.0001
-#LR = 0.00001 
 LR = 0.000003 # this is the best so far for toyenv, diverges at an order of magnitude higher.
 LR = 0.00003 # diverges here! UNLESS we use experience replay and then it seems to work ok
-#LR = 0.0003 
-#LR = 0.0003
 
 USE_TARGET = False
-
 SAVE_CYCLES = 1
 BATCH_SIZE = 128
 ENVS = 2
 STEPS_BETWEEN_TRAINING = 512
 PARAM_UPDATES_PER_CYCLE = 500
-
-TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP  = 20
+#TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP  = 20
 
 ''' without replay_buffer.updateWeights, get to 95% acc in 25k updates '''
-
-
 '''
 
 
@@ -116,7 +111,7 @@ if __name__ == '__main__':
     for i in range(ENVS):
  
       #env = gym.make(agent.ENVIRONMENT)
-      env = ToyEnv(agent.TOYENV_SIZE, agent.USE_COORDS)
+      env = LoopEnv(agent.TOYENV_SIZE, agent.USE_COORDS)
       state1 = tf.cast(env.reset(), tf.float32)
       # 0 action is 'NOOP'
       state2 = tf.cast(env.step(0)[0], tf.float32)
@@ -143,6 +138,7 @@ if __name__ == '__main__':
     total_rewards = [0 for _ in envs]
 
 
+    states_buffer = PrioritizedReplayBuffer(BUFFER_SIZE, 0.001)
     replay_buffer = PrioritizedReplayBuffer(BUFFER_SIZE, 0.001)
 
     while True: 
@@ -152,7 +148,8 @@ if __name__ == '__main__':
       print('acting')
 
       if cycle == 0:
-        cycle_steps = BUFFER_SIZE // TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP
+        #cycle_steps = BUFFER_SIZE // TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP // ENVS
+        cycle_steps = BUFFER_SIZE // ENVS
       else:
         cycle_steps = STEPS_BETWEEN_TRAINING
       for step in range(cycle_steps):
@@ -192,8 +189,8 @@ if __name__ == '__main__':
           rewards.append(reward)
 
         # need to copy to CPU so we don't use all the GPU memory
-        #with tf.device('/device:CPU:0'):
-        if True:
+        with tf.device('/device:CPU:0'):
+        #if True:
           states_l.append(tf.identity(states))
           actions_l.append(tf.identity(actions))
           rewards_l.append(tf.stack(rewards))
@@ -201,7 +198,8 @@ if __name__ == '__main__':
 
         states = tf.stack(next_states)
 
-      states_l.append(states)
+      with tf.device('/device:CPU:0'):
+        states_l.append(states)
       
 
       # compute value targets (discounted returns to end of episode (or end of training))
@@ -220,29 +218,38 @@ if __name__ == '__main__':
       states_a, states_b, = [tf.reshape(x, (ENVS * BATCH_SIZE, 2, 1)) for x in [states_a, states_b, states_k]]
       '''
 
-      def dataGen():
-        for i in range(len(states_l) - 1):
-          for j in range(TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP):
-            # TODO should pick states_k from all states seen, not just most recent iteration?
-            states_k = states_l[random.randint(0,len(states_l) - 1)] 
-            envs_data = (states_l[i], states_l[i+1], states_k, actions_l[i], rewards_l[i], dones_l[i])
+      with tf.device('/device:CPU:0'):
+        def dataGen():
+          for i in range(len(states_l) - 1):
+            envs_data = (states_l[i], states_l[i+1], actions_l[i], rewards_l[i], dones_l[i])
             for e,_ in enumerate(envs):
-              dp = [ed[e] for ed in envs_data]
-              yield dp
-            
+                dp = [ed[e] for ed in envs_data]
+                yield dp
+              
 
-      #replay_buffer.addDatapoints(dataGen(), [1 for _ in range((len(states_l) - 1) * TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP * ENVS)])
-      replay_buffer.addDatapoints(dataGen())
+        #replay_buffer.addDatapoints(dataGen(), [1 for _ in range((len(states_l) - 1) * TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP * ENVS)])
+        if cycle > 0:
+          replay_buffer.addDatapoints(dataGen())
+        else:
+          for i,d in enumerate(dataGen()):
+            replay_buffer.data[i] = d
+            replay_buffer.sumtree[i] = replay_buffer.max_error + replay_buffer.epsilon
+
+        for e in range(ENVS):
+          states_buffer.addDatapoints([s[e] for s in states_l])
 
       def getBatch():
-        # TODO: there's an error here, doesn't take into account dones. Shouldn't matter for toy environment though.
-        b,indices,probs = replay_buffer.sampleBatch(BATCH_SIZE)
-        states_a, states_b, states_k, actions_a, _, _ = zip(*b)
-        states_a, states_b, states_k, actions_a = [tf.stack(s) for s in [states_a, states_b, states_k, actions_a]]
-        states_a, states_b, states_k = [s[...,-1:] for s in [states_a, states_b, states_k]] # remove time dimension
-        states_a, states_b, states_k = [tf.reshape(x, [BATCH_SIZE] + agent.INPUT_SHAPE) for x in [states_a, states_b, states_k]]
-        Dbk_target = target_actor.distance_states(states_b, states_k)
-        return (states_a, states_b, states_k, actions_a, Dbk_target), indices, tf.cast(probs, tf.float32)
+        with tf.device('/device:CPU:0'):
+          # TODO: there's an error here, doesn't take into account dones. Shouldn't matter for toy environment though.
+          b,indices,probs = replay_buffer.sampleBatch(BATCH_SIZE)
+          states_a, states_b, actions_a, _, _ = zip(*b)
+          # TODO should I use the k_probs?
+          states_k, k_indices, k_probs = states_buffer.sampleBatch(BATCH_SIZE)
+          states_a, states_b, states_k, actions_a = [tf.stack(s) for s in [states_a, states_b, states_k, actions_a]]
+          states_a, states_b, states_k = [s[...,-1:] for s in [states_a, states_b, states_k]] # remove time dimension
+          states_a, states_b, states_k = [tf.reshape(x, [BATCH_SIZE] + agent.INPUT_SHAPE) for x in [states_a, states_b, states_k]]
+          Dbk_target = target_actor.distance_states(states_b, states_k)
+          return (states_a, states_b, states_k, actions_a, Dbk_target), indices, tf.cast(probs, tf.float32)
       
 
       print('training distance')

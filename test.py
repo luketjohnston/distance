@@ -3,7 +3,7 @@ import code
 import numpy as np
 import tensorflow as tf
 import agent
-from toyenv import LoopEnv
+from toyenv import LoopEnv, ToyEnv
 
 def printAccuracy(env, batch_size, actor):
   coords = np.random.randint(0,agent.TOYENV_SIZE,size=(batch_size, 2, 2, 1))
@@ -25,7 +25,7 @@ def printAccuracy(env, batch_size, actor):
   print('accurracy: ' + str(ave_err))
   return ave_err
 
-def actionAccuracy(env, batch_size, actor):
+def actionAccuracy(env, batch_size, actor, verbose=False):
   coords1 = np.random.randint(0,env.n,size=(batch_size, 2))
   coords2 = np.random.randint(0,env.n,size=(batch_size, 2))
   obs1,obs2 = env.coordsToObs(coords1), env.coordsToObs(coords2)
@@ -37,6 +37,10 @@ def actionAccuracy(env, batch_size, actor):
   for i in range(batch_size):
     action = actions[i]
     correct += int(action in env.correctActions(coords1[i], coords2[i]))
+    if verbose and not action in env.correctActions(coords1[i], coords2[i]):
+      print('Incorrect action!')
+      input('%s, %s: %s' % (str(coords1[i]), str(coords2[i]), str(dists[i])))
+
   acc = correct / batch_size
   print('action acc: ' + str(acc))
   return acc
@@ -71,7 +75,7 @@ def printSelfDist(actor):
 
 if __name__ == '__main__':
   actor = tf.saved_model.load(agent.model_savepath)
-  env = LoopEnv(agent.TOYENV_SIZE)
+  env = ToyEnv(agent.TOYENV_SIZE, use_coords=False)
   #env = LoopEnv(4)
   #printLargestDist(actor)
   #input('above is largest')
@@ -111,5 +115,6 @@ if __name__ == '__main__':
     i1, j1 = t1
     i2,j2 = t2
     return actor.distance_states(states[i1][j1], states[i2][j2])
+  actionAccuracy(env, 100, actor, True)
 
   code.interact(local=locals())
