@@ -6,19 +6,19 @@ import numpy as np
 from train import *
 
 dir_path = os.path.dirname(os.path.realpath(__file__))
-loss_savepath = os.path.join(dir_path, 'loss.pickle')
+loss_savepath = os.path.join(dir_path, 'actor.pickle')
 
 import agent
 
 
-with open(agent.accs_savepath, "rb") as f: 
-  rewards = pickle.load(f)
+with open(agent.picklepath, "rb") as f: 
+  save = pickle.load(f)
+  y = save['accs']
 
 
-input(rewards[:100])
 
 fig, ax = plt.subplots()
-ax.plot(rewards)
+ax.plot(y)
 ax.grid(True)
 start, end = ax.get_ylim()
 #ax.set_ylim(0,0.1)

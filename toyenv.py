@@ -30,6 +30,27 @@ class ToyEnv(gym.Env):
       obs[self.coords[0], self.coords[1]] = 1
     return obs
 
+  def getRandomTransitions(self, batch_size):
+    coords_a, coords_b, coords_k, actions = [],[],[],[]
+    for b in range(batch_size):
+      a = np.random.randint(0,self.n,size=(2,))
+      action = np.random.randint(0,5)
+      b = a.copy()
+      if action == 1 and a[0] < self.n-1: b[0] += 1
+      if action == 2 and a[0] > 0:      b[0] -= 1
+      if action == 3 and a[1] < self.n-1: b[1] += 1
+      if action == 4 and a[1] > 0:      b[1] -= 1
+      k = np.random.randint(0,self.n,size=(2,))
+      coords_a.append(a)
+      coords_b.append(b)
+      coords_k.append(k)
+      actions.append(action)
+    coords_a, coords_b, coords_k, actions = [np.stack(c) for c in [coords_a, coords_b, coords_k, actions]]
+    obs_a, obs_b, obs_k = [self.coordsToObs(c) for c in [coords_a, coords_b, coords_k]]
+    obs_a, obs_b, obs_k = [np.expand_dims(o, -1) for o in [obs_a, obs_b, obs_k]]
+    return (obs_a, obs_b, obs_k, actions)
+      
+
   # coords has shape [batch size, 1, 1]
   def coordsToObs(self, coords):
     if self.use_coords:
@@ -113,6 +134,8 @@ class LoopEnv(ToyEnv):
       if start[0] == self.n - 1:
         actions.append(1)
     return actions
+  def getRandomTransitions(self, batch_size):
+    raise Exception('not implemented')
 
 
 

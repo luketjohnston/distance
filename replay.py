@@ -2,7 +2,7 @@ import random
 
 class PrioritizedReplayBuffer():
   def __init__(self, n, epsilon):
-    assert(n & (n-1) == 0 and n != 0, 'n must be a power of 2')
+    assert n & (n-1) == 0 and n != 0, 'n must be a power of 2'
     self.n = n
     self.epsilon = epsilon
     # invariant: sumtree[k] == sumtree[2*k+1] + sumtree[2*k+2]
@@ -21,7 +21,7 @@ class PrioritizedReplayBuffer():
     k = 0
     while k < self.n - 1:
       left,right = sumtree[2*k+1], sumtree[2*k+2]
-      if w < left:
+      if w <= left:
         k = 2*k+1
       else:
         k = 2*k+2
@@ -38,6 +38,7 @@ class PrioritizedReplayBuffer():
       batch.append(d)
       indices.append(i)
       probs.append(p)
+      assert not d is None
     return batch, indices, probs
 
   # indices are the indices into sumtree, as returned by sampleBatch
@@ -48,7 +49,7 @@ class PrioritizedReplayBuffer():
       self.max_error = max(weights[i], self.max_error)
     self.fixWeights(set(indices))
 
-  # changed_indices are the indices into sutree
+  # changed_indices are the indices into subtree
   def fixWeights(self, changed_indices):
     # percolate changes to sums up tree
     while not 0 in changed_indices:

@@ -16,24 +16,32 @@ from toyenv import ToyEnv, LoopEnv
 physical_devices = tf.config.experimental.list_physical_devices('GPU')
 tf.config.experimental.set_memory_growth(physical_devices[0], True)
 
+TOY_ENV = True
+TOYENV_SIZE = 84
+USE_COORDS = False
+
+def makeEnv():
+  if TOY_ENV:
+    return ToyEnv(TOYENV_SIZE, USE_COORDS)
+  else:
+    return gym.make(ENVIRONMENT)
+
 
 ENVIRONMENT = 'MontezumaRevenge-v0'
 #ENVIRONMENT = 'PongDeterministic-v4'
 #ENVIRONMENT = 'CartPole-v1'
-env = gym.make(ENVIRONMENT)
-TOYENV_SIZE = 20
-USE_COORDS = False
-env = LoopEnv(TOYENV_SIZE, USE_COORDS)
+env = makeEnv()
 
-ALPHA = 3
-BETA = 0
-
-
-if USE_COORDS:
-  INPUT_SHAPE = [2]
+if TOY_ENV:
+  if USE_COORDS:
+    INPUT_SHAPE = [2]
+  else:
+    INPUT_SHAPE = [TOYENV_SIZE, TOYENV_SIZE, 1]
 else:
-  INPUT_SHAPE = [TOYENV_SIZE, TOYENV_SIZE, 1]
+  INPUT_SHAPE = [84,110,4]
 
+ALPHA = 0
+BETA = 0
 
 
 ACTIONS = env.action_space.n
@@ -42,20 +50,19 @@ ENT_EPSILON = 1e-7
 
 HIDDEN_NEURONS=128
 
-REGULARIZATION_WEIGHT = 0
-
 FILTER_SIZES = [9, 5, 3]
 CHANNELS =     [32,64,64]
 STRIDES =     [4,2,1]
 
-FILTER_SIZES = [7, 3]
-CHANNELS =     [32,32]
-STRIDES =     [4,1]
-FILTER_SIZES = []
-CHANNELS = []
-STRIDES = []
+#FILTER_SIZES = [7, 3]
+#CHANNELS =     [32,32]
+#STRIDES =     [4,1]
+if TOY_ENV:
+  FILTER_SIZES = []
+  CHANNELS = []
+  STRIDES = []
 
-ENCODING_SIZE = 64
+ENCODING_SIZE = 32
 
 
 IMSPEC = tf.TensorSpec([None] + INPUT_SHAPE,)
@@ -79,11 +86,7 @@ EPSILON = 0.1
 
 dir_path = os.path.dirname(os.path.realpath(__file__))
 model_savepath = os.path.join(dir_path, 'actor_save2')
-accs_savepath = os.path.join(dir_path, 'accs.pickle')
-loss_savepath = os.path.join(dir_path, 'actor_loss.pickle')
-rewards_savepath = os.path.join(dir_path, 'rewards.pickle')
-
-
+picklepath = os.path.join(dir_path, 'actor.pickle')
 
 def getConvOutputSizeValid(w,h,filtersize, channels, stride):
   # padding if necessary
@@ -122,9 +125,9 @@ class Agent(tf.Module):
   ''' encodes state'''
   @tf.function(input_signature=(IMSPEC,))
   def encode(self, states):
+    tf.debugging.check_numerics(states, 'states nan')
     mvars = self.vars
     x = states
-    #return x
     for i in range(len(CHANNELS)):
       filt = mvars[i]
       stride = STRIDES[i]
@@ -134,7 +137,13 @@ class Agent(tf.Module):
     vi = len(CHANNELS)
     #vi = 0
     w, b = mvars[vi:vi+2]
+    #tf.print('w', w)
+    #tf.print('b', b)
+    tf.debugging.check_numerics(w, 'encoding w nan')
+    tf.debugging.check_numerics(b, 'encoding b nan')
     encoding = tf.nn.leaky_relu(tf.einsum('ba,ah->bh', x,w) + b)
+    #tf.print('encoding1', encoding)
+    tf.debugging.check_numerics(encoding, 'encoding nan')
     w,b = mvars[vi+2:vi+4]
     encoding = tf.nn.leaky_relu(tf.einsum('ba,ao->bo',encoding,w)  + b)
     return encoding
@@ -149,7 +158,8 @@ class Agent(tf.Module):
     w,b = mvars[:2]
     distance= tf.nn.leaky_relu(tf.einsum('ba,ah->bh', x,w) + b)
     w,b = mvars[2:4]
-    distance = tf.einsum('ba,ao->bo',distance,w)  + b
+    # TODO add bias back on
+    distance = tf.einsum('ba,ao->bo',distance,w)
     # TODO should this be RELU instead?
     #r = tf.stack([tf.reduce_sum(tf.abs(enc1 - enc2), -1) for _ in range(ACTIONS)], -1)
     return distance
@@ -163,22 +173,36 @@ class Agent(tf.Module):
 
   @tf.function(input_signature=(IMSPEC, IMSPEC, IMSPEC, INTSPEC, DISTSPEC, FLOATSPEC))
   def loss(self, states_a, states_b, states_k, action, Dbk_target, probs):
+    #tf.print('sa, sk, ea, ek, dak')
+    #tf.print(states_a)
+    #tf.print(states_k)
     enca, encb, enck = [self.encode(x) for x in [states_a, states_b, states_k]]
+    #tf.print(enca)
+    #tf.print(enck)
     
     Dak = self.distance(enca, enck)
+    #tf.print(Dak)
     Dak_a = tf.gather(Dak, action, batch_dims=1)
     Dab = self.distance(enca, encb)
     Dab_a = tf.gather(Dab, action, batch_dims=1)
+
+    tf.debugging.check_numerics(Dak, 'Dak nan')
+    tf.debugging.check_numerics(Dak_a, 'Dak_a nan')
+    tf.debugging.check_numerics(Dab, 'Dab nan')
+    tf.debugging.check_numerics(Dab_a, 'Dab_a nan')
 
     # check if k == b. If so, target Dbk needs to be 0
     target = tf.reduce_min(Dbk_target, axis=-1)
     mask = tf.squeeze(tf.reduce_max(tf.cast(tf.not_equal(encb, enck), tf.float32), axis=1))
     target = target * mask
     target = tf.stop_gradient(1 + DISCOUNT * target)
+    tf.debugging.check_numerics(target, 'target nan')
+    tf.debugging.check_numerics(mask, 'mask nan')
 
     # apply importance sampling to the target
     weights = tf.pow(probs, -BETA)
     weights /= tf.reduce_max(weights)
+    tf.debugging.check_numerics(weights, 'weights nan')
 
     TD_error = tf.abs(Dak_a - target) 
     TD_error = tf.pow(TD_error, ALPHA)
@@ -190,12 +214,14 @@ class Agent(tf.Module):
     # transitions are stochastic 
     loss_ab = tf.reduce_mean(tf.pow(weights * (Dab_a - 1), 2))
     #loss += tf.reduce_mean(tf.abs(Dab_a - 1))
+    tf.debugging.check_numerics(loss_TD, 'loss_TD nan')
+    tf.debugging.check_numerics(loss_ab, 'loss_ab nan')
     
 
     regloss = 0
     for x in self.vars:
-      #regloss += REGULARIZATION_WEIGHT * tf.reduce_sum(tf.pow(x, 2))
-      regloss += REGULARIZATION_WEIGHT * tf.reduce_sum(tf.abs(x))
+      regloss += tf.reduce_mean(tf.pow(x, 2))
+      #regloss += tf.reduce_sum(tf.abs(x))
 
     #tf.print('a,b,k, dak, dab, dbk_target')
     #tf.print(states_a)
@@ -220,16 +246,9 @@ if __name__ == '__main__':
   print('Saving model...')
   tf.saved_model.save(agent, model_savepath)
 
-
-  losses = []
-  episode_rewards = []
-  accs = []
-  with open(loss_savepath, "wb") as fp:
-    pickle.dump(losses, fp)
-  with open(rewards_savepath, "wb") as fp:
-    pickle.dump(episode_rewards, fp)
-  with open(accs_savepath, "wb") as fp:
-    pickle.dump(accs, fp)
+  save = {}
+  with open(picklepath, "wb") as fp:
+    pickle.dump(save, fp)
     
 
     
