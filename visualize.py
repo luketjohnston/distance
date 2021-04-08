@@ -16,15 +16,6 @@ import numpy as np
 import agent
 from wgan import *
 
-
-# LOAD MNIST DATASET
-mnist = tf.keras.datasets.mnist
-(x_train, y_train), (x_test, y_test) = mnist.load_data()
-x_train, x_test = x_train / 255.0, x_test / 255.0
-train_ds = tf.data.Dataset.from_tensor_slices(
-    (x_train, y_train)).shuffle(10000).batch(32)
-test_ds = tf.data.Dataset.from_tensor_slices((x_test, y_test)).batch(1)
-
 dir_path = os.path.dirname(os.path.realpath(__file__))
 model_savepath = os.path.join(dir_path, 'gan.mod')
 loss_savepath = os.path.join(dir_path, 'loss.pickle')
@@ -54,6 +45,7 @@ while True:
   statelist.append(observation)
   state = tf.stack(statelist, -1)
   state = tf.squeeze(state)
+  # TODO what the hell is going on here
   state = state[:,:,:DEPTH]
   state = tf.expand_dims(state, 0)
 

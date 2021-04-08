@@ -75,7 +75,7 @@ def printSelfDist(actor):
 
 if __name__ == '__main__':
   actor = tf.saved_model.load(agent.model_savepath)
-  env = ToyEnv(agent.TOYENV_SIZE, use_coords=False)
+  env = agent.makeEnv()
   #env = LoopEnv(4)
   #printLargestDist(actor)
   #input('above is largest')
@@ -105,16 +105,23 @@ if __name__ == '__main__':
   #bl = [[[agent.TOYENV_SIZE-1],[0]]]
   #br = [[[agent.TOYENV_SIZE-1],[agent.TOYENV_SIZE-1]]]
 
-  states = [[None for _ in range(agent.TOYENV_SIZE)] for _ in range(agent.TOYENV_SIZE)]
-  for i in range(agent.TOYENV_SIZE):
-    for j in range(agent.TOYENV_SIZE):
-      obs = np.zeros((1, agent.TOYENV_SIZE, agent.TOYENV_SIZE, 1))
-      obs[0,i,j,0] = 1
-      states[i][j] = obs
+  if not agent.USE_COORDS:
+    states = [[None for _ in range(agent.TOYENV_SIZE)] for _ in range(agent.TOYENV_SIZE)]
+    for i in range(agent.TOYENV_SIZE):
+      for j in range(agent.TOYENV_SIZE):
+        obs = np.zeros((1, agent.TOYENV_SIZE, agent.TOYENV_SIZE, 1))
+        obs[0,i,j,0] = 1
+        states[i][j] = obs
+  else:
+    states = [[np.array([[[i],[j]]], dtype=np.float32) for j in range(agent.TOYENV_SIZE)] for i in range(agent.TOYENV_SIZE)]
+    
   def dist(t1,t2):
     i1, j1 = t1
     i2,j2 = t2
-    return actor.distance_states(states[i1][j1], states[i2][j2])
-  actionAccuracy(env, 100, actor, True)
+    if not agent.USE_LOG:
+      return actor.distance_states(states[i1][j1], states[i2][j2])
+    else:
+      return tf.math.exp(actor.distance_states(states[i1][j1], states[i2][j2]))
+  #actionAccuracy(env, 100, actor, True)
 
   code.interact(local=locals())

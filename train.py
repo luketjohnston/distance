@@ -30,6 +30,9 @@ with alpha = 3 beta = 0, can use higher learning rate, and doesn't diverge (will
 #ALPHA = 2
 #ALPHA = 0
 
+USE_BUFFER = True
+TEST_LIMITED_STATES = False
+
 OPTIMIZER = 'SGD' # 'Adam' or 'RMSprop' or 'SGD'
 OPTIMIZER = 'RMSprop' # 'Adam' or 'RMSprop' or 'SGD'
 OPTIMIZER = 'Adam' # 'Adam' or 'RMSprop' or 'SGD'
@@ -38,6 +41,7 @@ GRAD_CLIP = 0.01
 REGULARIZATION_WEIGHT = 0.0
 
 BUFFER_SIZE = 2**15
+#BUFFER_SIZE = 2**6
 #BUFFER_SIZE = 8
 
 
@@ -46,7 +50,11 @@ CLIP_REWARDS = True
 #LR = 0.001 # this is tf default
 LR = 0.000003 # this is the best so far for toyenv, diverges at an order of magnitude higher.
 LR = 0.00003 # diverges here! UNLESS we use experience replay and then it seems to work ok
+LR = 0.0001
+LR = 0.00001
 LR = 0.01 
+LR = 0.0001  # this learning rate works well for log
+#LR = 0.00001  
 
 USE_TARGET = False
 SAVE_CYCLES = 1
@@ -54,18 +62,10 @@ BATCH_SIZE = 128
 ENVS = 2
 STEPS_BETWEEN_TRAINING = 512
 PARAM_UPDATES_PER_CYCLE = 500
+if TEST_LIMITED_STATES:
+  PARAM_UPDATES_PER_CYCLE *= 999999
 #TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP  = 20
 
-'''
-Here's a possible explanation for explosions:
-if we are collecting data, let's say the last states we visit are a,a,a. And we 
-never see a transition away from a. Then every time we train on a -> a, d(a,x) 
-is being increased (if the training affects d(a,_,action that would move closer to x)
-basically, we just need one incorrect value in the network for a transition that wasn't
-observed, and then if the training on other spots increases this value along with
-the other observed transitions, then it can explode. This would explain why more
-PARAM_UPDATES_PER_CYCLE is bad, but not why more STEPS_BETWEEN_TRAINING is bad... 
-'''
 
 
 if __name__ == '__main__':
@@ -160,7 +160,7 @@ if __name__ == '__main__':
     while True: 
 
 
-      if not agent.TOY_ENV:
+      if USE_BUFFER:
         states_l, actions_l, rewards_l, dones_l = [],[],[],[]
         print('acting')
 
@@ -228,10 +228,8 @@ if __name__ == '__main__':
             for i in range(len(states_l) - 1):
               envs_data = (states_l[i], states_l[i+1], actions_l[i], rewards_l[i], dones_l[i])
               for e,_ in enumerate(envs):
-                # TODO this is ok right? only add transitions that don't end the episode?
-                if not dones_l[i][e]:
-                  dp = [ed[e] for ed in envs_data]
-                  yield dp
+                dp = [ed[e] for ed in envs_data]
+                yield dp
                 
 
           #replay_buffer.addDatapoints(dataGen(), [1 for _ in range((len(states_l) - 1) * TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP * ENVS)])
@@ -244,7 +242,7 @@ if __name__ == '__main__':
           with tf.device('/device:CPU:0'):
             # TODO: there's an error here, doesn't take into account dones. Shouldn't matter for toy environment though.
             b,indices,probs = replay_buffer.sampleBatch(BATCH_SIZE)
-            states_a, states_b, actions_a, _, _ = zip(*b)
+            states_a, states_b, actions_a, _, dones_ab = zip(*b)
             # TODO should I use the k_probs?
             states_k, k_indices, k_probs = states_buffer.sampleBatch(BATCH_SIZE)
             states_a, states_b, states_k, actions_a = [tf.stack(s) for s in [states_a, states_b, states_k, actions_a]]
@@ -253,15 +251,15 @@ if __name__ == '__main__':
             #is this necessary?
             states_a, states_b, states_k = [tf.reshape(x, [BATCH_SIZE] + agent.INPUT_SHAPE) for x in [states_a, states_b, states_k]]
             Dbk_target = target_actor.distance_states(states_b, states_k)
-            return (states_a, states_b, states_k, actions_a, Dbk_target), indices, tf.cast(probs, tf.float32)
+            return (states_a, states_b, states_k, actions_a, Dbk_target, dones_ab), indices, tf.cast(probs, tf.float32)
 
-      else: # agent.TOYENV:
+      else: # agent.TOYENV and not USE_BUFFER:
 
         def getBatch():
-          states_a, states_b, states_k, actions = env.getRandomTransitions(BATCH_SIZE)
+          states_a, states_b, states_k, actions, dones_ab = env.getRandomTransitions(BATCH_SIZE)
           Dbk_target = target_actor.distance_states(states_b, states_k)
           indices = [0] * BATCH_SIZE; probs = [1.] * BATCH_SIZE # not important
-          return (states_a, states_b, states_k, actions, Dbk_target), indices, tf.cast(probs, tf.float32)
+          return (states_a, states_b, states_k, actions, Dbk_target, dones_ab), indices, tf.cast(probs, tf.float32)
           
         
       
@@ -269,9 +267,9 @@ if __name__ == '__main__':
 
       print('training distance')
       for b in range(PARAM_UPDATES_PER_CYCLE):
-        (states_a, states_b, states_k, actions_a, Dbk_target), indices, probs = getBatch()
+        (states_a, states_b, states_k, actions_a, Dbk_target, dones_ab), indices, probs = getBatch()
         with tf.GradientTape(watch_accessed_variables=True) as tape:
-          loss, td_error = actor.loss(states_a, states_b, states_k, actions_a, Dbk_target, probs)
+          loss, td_error, mean_dist = actor.loss(states_a, states_b, states_k, actions_a, Dbk_target, probs, dones_ab)
           loss_TD = loss[0]; loss_ab = loss[1] 
           regloss = loss[2] * REGULARIZATION_WEIGHT
           
@@ -287,6 +285,7 @@ if __name__ == '__main__':
           if tf.math.reduce_any(tf.math.is_nan(g)):
             foundNan = True
             nanCount += 1
+            break
             #print(g)
             #tf.print(g, summarize=-1) # -1 indicates print everything
             #code.interact(local=locals())
@@ -302,7 +301,6 @@ if __name__ == '__main__':
         if agent.TOY_ENV and not b % 50:
           acc = actionAccuracy(env,100, actor)
           accs += [acc]
-          print(loss_str)
           maxgrad = 0
           for v in grad:
             maxgrad = max(tf.reduce_max(v), maxgrad)
@@ -311,10 +309,13 @@ if __name__ == '__main__':
           for v in actor.vars:
             maxweight = max(tf.reduce_max(v), maxweight)
           max_weights.append(maxweight.numpy())
+        if not b % 50:
+          print('Mean Dak: ' + str(mean_dist))
+          print(loss_str)
 
         # important to convert td_error to numpy first,
         # ovtherwise it takes forever
-        if not agent.TOY_ENV:
+        if USE_BUFFER:
           replay_buffer.updateWeights(indices, td_error.numpy())
         #maxtd = max(maxtd, tf.reduce_max(td_error))
         #print('MAX TD: ' + str(maxtd))

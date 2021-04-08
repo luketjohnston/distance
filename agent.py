@@ -9,32 +9,38 @@ import pickle
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import numpy as np
-from toyenv import ToyEnv, LoopEnv
+from toyenv import ToyEnv, LoopEnv, DeadEnd
 
 
 # For some reason this is necessary to prevent error
 physical_devices = tf.config.experimental.list_physical_devices('GPU')
 tf.config.experimental.set_memory_growth(physical_devices[0], True)
 
-TOY_ENV = True
-TOYENV_SIZE = 84
-USE_COORDS = False
+USE_LOG = True
+
+TOY_ENV = False
+TOYENV_SIZE = 10
+USE_COORDS = True
+DEADEND = True
+
+ENVIRONMENT = 'MontezumaRevengeDeterministic-v4'
+#ENVIRONMENT = 'PongDeterministic-v4'
+#ENVIRONMENT = 'CartPole-v1'
 
 def makeEnv():
-  if TOY_ENV:
+  if TOY_ENV and not DEADEND:
     return ToyEnv(TOYENV_SIZE, USE_COORDS)
+  elif TOY_ENV and DEADEND:
+    return DeadEnd(TOYENV_SIZE, USE_COORDS)
   else:
     return gym.make(ENVIRONMENT)
 
 
-ENVIRONMENT = 'MontezumaRevenge-v0'
-#ENVIRONMENT = 'PongDeterministic-v4'
-#ENVIRONMENT = 'CartPole-v1'
 env = makeEnv()
 
 if TOY_ENV:
   if USE_COORDS:
-    INPUT_SHAPE = [2]
+    INPUT_SHAPE = [2, 1]
   else:
     INPUT_SHAPE = [TOYENV_SIZE, TOYENV_SIZE, 1]
 else:
@@ -57,6 +63,7 @@ STRIDES =     [4,2,1]
 #FILTER_SIZES = [7, 3]
 #CHANNELS =     [32,32]
 #STRIDES =     [4,1]
+
 if TOY_ENV:
   FILTER_SIZES = []
   CHANNELS = []
@@ -77,16 +84,18 @@ LOGITSPEC = tf.TensorSpec([None, ACTIONS],)
 ENCSPEC = tf.TensorSpec([None, ENCODING_SIZE],)
 
 
+
 DISCOUNT = 0.999
 #DISCOUNT = 0.99
+DISCOUNT = 0.9
+DISCOUNT = 0.999
 ENTROPY_WEIGHT = 0.001
-EPSILON = 0.1
 
 #ADD_ENTROPY = True
 
 dir_path = os.path.dirname(os.path.realpath(__file__))
 model_savepath = os.path.join(dir_path, 'actor_save2')
-picklepath = os.path.join(dir_path, 'actor.pickle')
+picklepath = os.path.join(model_savepath, 'actor.pickle')
 
 def getConvOutputSizeValid(w,h,filtersize, channels, stride):
   # padding if necessary
@@ -171,8 +180,8 @@ class Agent(tf.Module):
     return self.distance(enc1, enc2)
 
 
-  @tf.function(input_signature=(IMSPEC, IMSPEC, IMSPEC, INTSPEC, DISTSPEC, FLOATSPEC))
-  def loss(self, states_a, states_b, states_k, action, Dbk_target, probs):
+  @tf.function(input_signature=(IMSPEC, IMSPEC, IMSPEC, INTSPEC, DISTSPEC, FLOATSPEC, BOOLSPEC))
+  def loss(self, states_a, states_b, states_k, action, Dbk_target, probs, dones_ab):
     #tf.print('sa, sk, ea, ek, dak')
     #tf.print(states_a)
     #tf.print(states_k)
@@ -195,7 +204,18 @@ class Agent(tf.Module):
     target = tf.reduce_min(Dbk_target, axis=-1)
     mask = tf.squeeze(tf.reduce_max(tf.cast(tf.not_equal(encb, enck), tf.float32), axis=1))
     target = target * mask
-    target = tf.stop_gradient(1 + DISCOUNT * target)
+    
+    if not USE_LOG:
+      target = tf.stop_gradient(1 + DISCOUNT * target)
+      Dab_target = 1
+      max_target = 1 / (1 - DISCOUNT)
+    else:
+      target = tf.stop_gradient(tf.math.log(1 + tf.math.exp(target)))
+      Dab_target = 0
+      max_target = 10
+
+    target = target - tf.cast(dones_ab, tf.float32) * (target - max_target)
+
     tf.debugging.check_numerics(target, 'target nan')
     tf.debugging.check_numerics(mask, 'mask nan')
 
@@ -207,12 +227,11 @@ class Agent(tf.Module):
     TD_error = tf.abs(Dak_a - target) 
     TD_error = tf.pow(TD_error, ALPHA)
 
-    # TODO is this right?
+
     loss_TD = tf.reduce_mean(tf.pow(weights * (Dak_a - target), 2))
-    #loss = tf.reduce_mean(tf.abs(Dak_a - target))
     # TODO having this update in here is going to mess things up when 
     # transitions are stochastic 
-    loss_ab = tf.reduce_mean(tf.pow(weights * (Dab_a - 1), 2))
+    loss_ab = tf.reduce_mean(tf.pow(weights * (Dab_a - Dab_target), 2))
     #loss += tf.reduce_mean(tf.abs(Dab_a - 1))
     tf.debugging.check_numerics(loss_TD, 'loss_TD nan')
     tf.debugging.check_numerics(loss_ab, 'loss_ab nan')
@@ -231,7 +250,14 @@ class Agent(tf.Module):
     #tf.print(Dab)
     #tf.print(Dbk_target)
 
-    return (loss_TD, loss_ab, regloss), TD_error
+    if not USE_LOG:
+      av_distance = tf.reduce_mean(Dak)
+      max_distance = tf.reduce_max(Dak)
+    else:
+      av_distance  = tf.reduce_mean(tf.math.exp(Dak))
+      max_distance = tf.reduce_max(tf.math.exp(Dak))
+
+    return (loss_TD, loss_ab, regloss), TD_error, av_distance
     
     
 if __name__ == '__main__':
