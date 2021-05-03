@@ -1,4 +1,6 @@
 import random
+from utility import loopListBefore
+
 
 class PrioritizedReplayBuffer():
   def __init__(self, n, epsilon):
@@ -8,15 +10,15 @@ class PrioritizedReplayBuffer():
     # invariant: sumtree[k] == sumtree[2*k+1] + sumtree[2*k+2]
     self.sumtree = [0 for _ in range(2 * n - 1)]
     self.data = [None for _ in range(n)]
+    self.datacount = 0
+    self.dones = [None for _ in range(n)]
     self.i = 0 # keeps track of where we are overwriting data in the buffer
     self.max_error = 1
-
     
 
-  def sample(self):
+  def sampleSumtreeIndex(self):
     sumtree = self.sumtree
     sum_weights = sumtree[0]
-  
     w = random.random() * sum_weights
     k = 0
     while k < self.n - 1:
@@ -27,23 +29,54 @@ class PrioritizedReplayBuffer():
         k = 2*k+2
         w -= left
     # found leaf
-    return self.data[k - self.n + 1], k, self.sumtree[k]
+    return k
 
-  def sampleBatch(self, batch_size):
+  def uniformSampleState(self):
+    k = random.randrange(self.datacount)
+    i = k - self.n + 1
+    return self.data[i]
+    
+
+  # n is the number of states in the rollout
+  def sampleRollout(self, rollout):
+    while True:
+      k = self.sampleSumtreeIndex()
+      i = k - self.n + 1
+      terminal_i = self.i
+      if terminal_i < i: terminal_i += self.n
+      if (i + rollout < terminal_i) and not True in loopListBefore(self.dones, (i-1) % self.n, rollout-1):
+        break
+    return loopListBefore(self.data,i,rollout), self.dones[i % self.n], k, self.sumtree[k]
+
+  def uniformBatchState(self, batch_size):
+    batch = []
+    for _ in range(batch_size):
+      batch.append(self.uniformSampleState())
+    return batch
+
+  ''' return values:
+  batch: batch[i] is a list of subsequent entries of self.data
+    (a rollout). No entry can have self.dones[i] set except the last
+  dones: dones[i] is the self.dones value for the last entry of batch[i]
+  indices: the indices of the last states of each rollout. Used
+    in a later call to updateWeights
+  probs: the prob of returning each returned rollout
+  '''
+  def sampleRolloutBatch(self, batch_size, rollout):
     batch = []
     probs = []
+    dones = []
     indices = []
     for _ in range(batch_size):
-      d,i,p = self.sample() 
+      d,done,i,p = self.sampleRollout(rollout) 
       batch.append(d)
+      dones.append(done)
       indices.append(i)
       probs.append(p)
-      assert not d is None
-    return batch, indices, probs
+    return batch, dones, indices, probs
 
   # indices are the indices into sumtree, as returned by sampleBatch
   def updateWeights(self, indices, weights):
-     
     for i,index in enumerate(indices):
       self.sumtree[index] = weights[i] + self.epsilon
       self.max_error = max(weights[i], self.max_error)
@@ -61,22 +94,52 @@ class PrioritizedReplayBuffer():
         self.sumtree[p] = left + right
       changed_indices = parents
 
-  # if error = -1, uses max error
-  # dataGen is a generator
+  ''' add many datapoints at once. Slightly faster than adding
+  one datapoint at a time, because we can update all the weights of
+  the newly added datapoints at once, after adding all of them
+  (instead of updating individually every step)
+
+  if error = -1, uses max error
+  dataGen is a generator, generates (x,done) where x is data, done is 
+    the done value of that data
+  '''
   def addDatapoints(self, dataGen, errors=None):
-    
     if errors:
       self.max_error = max(max(errors), self.max_error)
-
     starti = self.i
     changed_indices = []
-    for xi,x in enumerate(dataGen):
+
+    for xi,(x,done) in enumerate(dataGen):
+      if self.datacount < self.n:
+        self.datacount += 1
       self.data[self.i] = x
+      self.dones[self.i] = done
       error = self.max_error if not errors else errors[xi]
       self.sumtree[self.n - 1 + self.i] = error + self.epsilon
       changed_indices.append(self.n - 1 + self.i)
       self.i = (self.i + 1) % self.n
     self.fixWeights(changed_indices)
+
+  ''' to add one datapoint at a time, use this. While saving up all datapoints
+  from an experience and then adding at once is more efficient, if we are
+  trying to maximize experience replay buffer size, we want to add them
+  instantly (so we don't have to store them in memory)
+   
+  TODO I've never actually tested this, wrote it and then decided not to use
+  it.
+  '''
+  def addDatapoint(self, dp, done, error=None):
+    if errors:
+      self.max_error = max(error, self.max_error)
+    if self.datacount < self.n:
+      self.datacount += 1
+    self.data[self.i] = x
+    self.dones[self.i] = done
+    error = self.max_error if not error else error
+    self.sumtree[self.n - 1 + self.i] = error + self.epsilon
+    self.fixWeights([self.n - 1 + self.i])
+ 
+
 
       
 if __name__ == '__main__':

@@ -33,6 +33,7 @@ with alpha = 3 beta = 0, can use higher learning rate, and doesn't diverge (will
 USE_BUFFER = True
 TEST_LIMITED_STATES = False
 
+
 OPTIMIZER = 'SGD' # 'Adam' or 'RMSprop' or 'SGD'
 OPTIMIZER = 'RMSprop' # 'Adam' or 'RMSprop' or 'SGD'
 OPTIMIZER = 'Adam' # 'Adam' or 'RMSprop' or 'SGD'
@@ -40,9 +41,9 @@ OPTIMIZER_EPSILON = 1e-7 #1e-7 is default for adam
 GRAD_CLIP = 0.01
 REGULARIZATION_WEIGHT = 0.0
 
-BUFFER_SIZE = 2**15
-#BUFFER_SIZE = 2**6
-#BUFFER_SIZE = 8
+BUFFER_SIZE = 2**18 # 2**17 is max we can hold in memory it seems
+#BUFFER_SIZE = 2**10
+#BUFFER_SIZE = 128
 
 
 CLIP_REWARDS = True
@@ -53,13 +54,14 @@ LR = 0.00003 # diverges here! UNLESS we use experience replay and then it seems 
 LR = 0.0001
 LR = 0.00001
 LR = 0.01 
-LR = 0.0001  # this learning rate works well for log
-#LR = 0.00001  
+LR = 0.0001  # works for 20x20 toyenv
+LR = 0.00001  # works for 20x20 toyenv
+#LR = 0.000001  # too low for 20x20 toyenv, log
+
 
 USE_TARGET = False
 SAVE_CYCLES = 1
-BATCH_SIZE = 128
-ENVS = 2
+BATCH_SIZE = 512
 STEPS_BETWEEN_TRAINING = 512
 PARAM_UPDATES_PER_CYCLE = 500
 if TEST_LIMITED_STATES:
@@ -118,7 +120,6 @@ if __name__ == '__main__':
       copyWeightsFromTo(actor, target_actor)
     
     maxtd = 0
-    envs = []
     states = []
     statelists = []
 
@@ -132,29 +133,23 @@ if __name__ == '__main__':
       def preprocess(s):
         return tf.cast(s, tf.float32)
 
-    # make environment
-    for i in range(ENVS):
- 
-      env = agent.makeEnv()
-      state1 = tf.cast(env.reset(), tf.float32)
-      # 0 action is 'NOOP'
-      state2 = tf.cast(env.step(0)[0], tf.float32)
-      state3 = tf.cast(env.step(0)[0], tf.float32)
-      state4 = tf.cast(env.step(0)[0], tf.float32)
-      statelist = [state1, state2, state3, state4]
-      statelist = [preprocess(s) for s in statelist]
-      state = tf.stack(statelist, -1)
-      envs += [env]
-      states.append(state)
-      statelists += [statelist]
 
-    states = tf.stack(states)
+    # make environment
+    env = agent.makeEnv()
+    state1 = tf.cast(env.reset(), tf.float32)
+    # 0 action is 'NOOP'
+    state2 = tf.cast(env.step(0)[0], tf.float32)
+    state3 = tf.cast(env.step(0)[0], tf.float32)
+    state4 = tf.cast(env.step(0)[0], tf.float32)
+    statelist = [state1, state2, state3, state4]
+    statelist = [preprocess(s) for s in statelist]
+    state = tf.stack(statelist, -1)
+
 
     cycle = 0
     nanCount = 0 if not 'nanCount' in save else save['nanCount']
-    total_rewards = [0 for _ in envs]
+    total_rewards = 0
 
-    states_buffer = PrioritizedReplayBuffer(BUFFER_SIZE, 0.001)
     replay_buffer = PrioritizedReplayBuffer(BUFFER_SIZE, 0.001)
 
     while True: 
@@ -165,42 +160,55 @@ if __name__ == '__main__':
         print('acting')
 
         if cycle == 0:
-          cycle_steps = BUFFER_SIZE // ENVS
+          cycle_steps = BUFFER_SIZE
         else:
           cycle_steps = STEPS_BETWEEN_TRAINING
         for step in range(cycle_steps):
-          actions = np.random.randint(0,5,size=(ENVS,))
-          next_states, rewards, dones = [], [], []
+          action = random.randrange(0,agent.ACTIONS)
 
-          for i in range(ENVS):
-            observation, reward, done, info = envs[i].step(actions[i])
-            if CLIP_REWARDS:
-              if reward > 1: reward = 1.0
-              if reward < -1: reward = -1.0
-            total_rewards[i] += reward
-            observation = preprocess(observation)
-            if (done): 
-              envs[i].reset()
-              episode_rewards += [total_rewards[i]]
-              print("Finished episode %d, reward: %f" % (len(episode_rewards), total_rewards[i]))
-              total_rewards[i] = 0
+          #print(agent.ACTION_MAP[action])
+          observation, reward, done, info = env.step(agent.ACTION_MAP[action])
+          if CLIP_REWARDS:
+            if reward > 1: reward = 1.0
+            if reward < -1: reward = -1.0
+          total_rewards += reward
+          observation = preprocess(observation)
 
-            statelists[i] = statelists[i][1:]
-            statelists[i].append(observation)
-            next_state = tf.stack(statelists[i], -1)
-            next_states.append(next_state)
-            dones.append(float(done))
-            rewards.append(reward)
+                
+
+          statelist = statelist[1:]
+          statelist.append(observation)
+          next_state = tf.stack(statelist, -1)
 
           # need to copy to CPU so we don't use all the GPU memory
           with tf.device('/device:CPU:0'):
           #if True:
-            states_l.append(tf.identity(states))
-            actions_l.append(tf.identity(actions))
-            rewards_l.append(tf.stack(rewards))
-            dones_l.append(tf.stack(dones))
+            states_l.append(tf.identity(observation))
+            actions_l.append(tf.identity(action))
+            rewards_l.append(tf.identity(reward))
+            dones_l.append(done)
 
-          states = tf.stack(next_states)
+          state = next_state
+          if (done): 
+            episode_rewards += [total_rewards]
+            print("Finished episode %d, reward: %f" % (len(episode_rewards), total_rewards))
+            total_rewards = 0
+
+            statelist = []
+            obs = preprocess(env.reset())
+            rew = 0
+            for i in range(agent.INPUT_SHAPE[-1]):
+              statelist.append(obs)
+              states_l.append(tf.identity(observation))
+              actions_l.append(tf.identity(0))
+              rewards_l.append(tf.identity(rew))
+              if i == agent.INPUT_SHAPE[-1] - 1:
+                break
+              obs,rew,done,info = env.step(0)
+              obs = preprocess(obs)
+              assert(not done) # if environment ends in first few noops, we have a problem
+              total_rewards += rew
+            state = tf.stack(statelist, -1)
 
 
         with tf.device('/device:CPU:0'):
@@ -209,42 +217,39 @@ if __name__ == '__main__':
 
         # compute value targets (discounted returns to end of episode (or end of training))
         #rewards_l[-1] += (1 - dones_l[-1]) * actor.policy_and_value(states)[1]
-        with tf.device('/device:CPU:0'):
-          for i in range(len(rewards_l)-2, -1, -1):
-            rewards_l[i] = rewards_l[i] + agent.DISCOUNT * (1-dones_l[i]) * rewards_l[i+1]
+        #with tf.device('/device:CPU:0'):
+        #  for i in range(len(rewards_l)-2, -1, -1):
+        #    rewards_l[i] = rewards_l[i] + agent.DISCOUNT * (1-dones_l[i]) * rewards_l[i+1]
 
-        print("Frames: %d" % ((cycle + 1) * STEPS_BETWEEN_TRAINING * ENVS))
+        print("Frames: %d" % ((cycle + 1) * STEPS_BETWEEN_TRAINING))
         print("Param updates: %d" % (cycle * PARAM_UPDATES_PER_CYCLE))
-
-        '''
-        TODO this is changed
-        states_a, states_b, actions_a = [tf.stack(s) for s in [states_a, states_b, actions_a]]
-        states_a, states_b, = [s[:,:,:,-1] for s in [states_a, states_b, states_k]] # remove time dimension
-        states_a, states_b, = [tf.reshape(x, (ENVS * BATCH_SIZE, 2, 1)) for x in [states_a, states_b, states_k]]
-        '''
 
         with tf.device('/device:CPU:0'):
           def dataGen():
-            for i in range(len(states_l) - 1):
-              envs_data = (states_l[i], states_l[i+1], actions_l[i], rewards_l[i], dones_l[i])
-              for e,_ in enumerate(envs):
-                dp = [ed[e] for ed in envs_data]
-                yield dp
-                
-
-          #replay_buffer.addDatapoints(dataGen(), [1 for _ in range((len(states_l) - 1) * TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP * ENVS)])
+            # TODO make sure we handle dones correctly in replay
+            # before modification, ignored last entry of below (return[-1])
+            return zip(zip(states_l, actions_l, rewards_l), dones_l)
           replay_buffer.addDatapoints(dataGen())
-
-          for e in range(ENVS):
-            states_buffer.addDatapoints([s[e] for s in states_l])
 
         def getBatch():
           with tf.device('/device:CPU:0'):
-            # TODO: there's an error here, doesn't take into account dones. Shouldn't matter for toy environment though.
-            b,indices,probs = replay_buffer.sampleBatch(BATCH_SIZE)
-            states_a, states_b, actions_a, _, dones_ab = zip(*b)
+            # get rollout of length (INPUT_SHAPE[-1] + 1
+            # this rollout is then stacked to get the transition from the
+            # state represented by the first INPUT_SHAPE[-1] observations,
+            # to the state represented by the last INPUT_SHAPE[-1] observations
+
+            b,dones_ab,indices,probs = replay_buffer.sampleRolloutBatch(BATCH_SIZE,agent.INPUT_SHAPE[-1] + 1)
+            dones_ab = tf.cast(dones_ab, tf.bool)
+
+            # get transition and action from rollouts
+            states_a = [ tf.stack([y[0] for y in x[:-1]], -1) for x in b ]
+            states_b = [ tf.stack([y[0] for y in x[1:]], -1) for x in b ]
+            actions_a = [ x[-1][1] for x in b ]
+              
             # TODO should I use the k_probs?
-            states_k, k_indices, k_probs = states_buffer.sampleBatch(BATCH_SIZE)
+            states_k,_,_,_ = replay_buffer.sampleRolloutBatch(BATCH_SIZE,agent.INPUT_SHAPE[-1])
+            states_k = [ tf.stack([y[0] for y in x], -1) for x in states_k]
+
             states_a, states_b, states_k, actions_a = [tf.stack(s) for s in [states_a, states_b, states_k, actions_a]]
             if agent.TOY_ENV:
               states_a, states_b, states_k = [s[...,-1:] for s in [states_a, states_b, states_k]] # remove time dimension
@@ -253,7 +258,7 @@ if __name__ == '__main__':
             Dbk_target = target_actor.distance_states(states_b, states_k)
             return (states_a, states_b, states_k, actions_a, Dbk_target, dones_ab), indices, tf.cast(probs, tf.float32)
 
-      else: # agent.TOYENV and not USE_BUFFER:
+      else: # agent.TOY_ENV and not USE_BUFFER:
 
         def getBatch():
           states_a, states_b, states_k, actions, dones_ab = env.getRandomTransitions(BATCH_SIZE)

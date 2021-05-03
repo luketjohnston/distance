@@ -18,10 +18,10 @@ tf.config.experimental.set_memory_growth(physical_devices[0], True)
 
 USE_LOG = True
 
-TOY_ENV = False
+TOY_ENV = True
 TOYENV_SIZE = 10
 USE_COORDS = True
-DEADEND = True
+DEADEND = False
 
 ENVIRONMENT = 'MontezumaRevengeDeterministic-v4'
 #ENVIRONMENT = 'PongDeterministic-v4'
@@ -37,28 +37,31 @@ def makeEnv():
 
 
 env = makeEnv()
+ACTIONS = env.action_space.n
 
 if TOY_ENV:
   if USE_COORDS:
     INPUT_SHAPE = [2, 1]
   else:
     INPUT_SHAPE = [TOYENV_SIZE, TOYENV_SIZE, 1]
+  ACTION_MAP = [0,1,2,3,4]
 else:
   INPUT_SHAPE = [84,110,4]
+  ACTIONS = 8
+  ACTION_MAP = [0,1,2,3,4,5,11,12]
 
-ALPHA = 0
+ALPHA = 1
 BETA = 0
 
 
-ACTIONS = env.action_space.n
 
 ENT_EPSILON = 1e-7
 
 HIDDEN_NEURONS=128
 
-FILTER_SIZES = [9, 5, 3]
+FILTER_SIZES = [7, 5, 5]
 CHANNELS =     [32,64,64]
-STRIDES =     [4,2,1]
+STRIDES =     [2,2,1]
 
 #FILTER_SIZES = [7, 3]
 #CHANNELS =     [32,32]
@@ -69,14 +72,14 @@ if TOY_ENV:
   CHANNELS = []
   STRIDES = []
 
-ENCODING_SIZE = 32
+ENCODING_SIZE = 64
 
 
 IMSPEC = tf.TensorSpec([None] + INPUT_SHAPE,)
 if ENVIRONMENT == 'CartPole-v1':
   IMSPEC = tf.TensorSpec([None, 4])
 
-INTSPEC = tf.TensorSpec([None], dtype=tf.int64)
+INTSPEC = tf.TensorSpec([None], dtype=tf.int32)
 FLOATSPEC = tf.TensorSpec([None],)
 DISTSPEC = tf.TensorSpec([None, ACTIONS],)
 BOOLSPEC = tf.TensorSpec([None], dtype=tf.bool)
@@ -94,7 +97,7 @@ ENTROPY_WEIGHT = 0.001
 #ADD_ENTROPY = True
 
 dir_path = os.path.dirname(os.path.realpath(__file__))
-model_savepath = os.path.join(dir_path, 'actor_save2')
+model_savepath = os.path.join(dir_path, 'actor_save')
 picklepath = os.path.join(model_savepath, 'actor.pickle')
 
 def getConvOutputSizeValid(w,h,filtersize, channels, stride):
@@ -203,14 +206,13 @@ class Agent(tf.Module):
     # check if k == b. If so, target Dbk needs to be 0
     target = tf.reduce_min(Dbk_target, axis=-1)
     mask = tf.squeeze(tf.reduce_max(tf.cast(tf.not_equal(encb, enck), tf.float32), axis=1))
-    target = target * mask
     
     if not USE_LOG:
-      target = tf.stop_gradient(1 + DISCOUNT * target)
+      target = tf.stop_gradient(1 + DISCOUNT * target * mask)
       Dab_target = 1
       max_target = 1 / (1 - DISCOUNT)
     else:
-      target = tf.stop_gradient(tf.math.log(1 + tf.math.exp(target)))
+      target = tf.stop_gradient(tf.math.log(1 + mask * tf.math.exp(target)))
       Dab_target = 0
       max_target = 10
 
