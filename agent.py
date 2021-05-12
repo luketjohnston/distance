@@ -50,7 +50,7 @@ else:
   ACTIONS = 8
   ACTION_MAP = [0,1,2,3,4,5,11,12]
 
-ALPHA = 1
+ALPHA = 0
 BETA = 0
 
 
@@ -137,7 +137,7 @@ class Agent(tf.Module):
   ''' encodes state'''
   @tf.function(input_signature=(IMSPEC,))
   def encode(self, states):
-    tf.debugging.check_numerics(states, 'states nan')
+    #tf.debugging.check_numerics(states, 'states nan')
     mvars = self.vars
     x = states
     for i in range(len(CHANNELS)):
@@ -151,11 +151,11 @@ class Agent(tf.Module):
     w, b = mvars[vi:vi+2]
     #tf.print('w', w)
     #tf.print('b', b)
-    tf.debugging.check_numerics(w, 'encoding w nan')
-    tf.debugging.check_numerics(b, 'encoding b nan')
+    #tf.debugging.check_numerics(w, 'encoding w nan')
+    #tf.debugging.check_numerics(b, 'encoding b nan')
     encoding = tf.nn.leaky_relu(tf.einsum('ba,ah->bh', x,w) + b)
     #tf.print('encoding1', encoding)
-    tf.debugging.check_numerics(encoding, 'encoding nan')
+    #tf.debugging.check_numerics(encoding, 'encoding nan')
     w,b = mvars[vi+2:vi+4]
     encoding = tf.nn.leaky_relu(tf.einsum('ba,ao->bo',encoding,w)  + b)
     return encoding
@@ -183,8 +183,9 @@ class Agent(tf.Module):
     return self.distance(enc1, enc2)
 
 
-  @tf.function(input_signature=(IMSPEC, IMSPEC, IMSPEC, INTSPEC, DISTSPEC, FLOATSPEC, BOOLSPEC))
-  def loss(self, states_a, states_b, states_k, action, Dbk_target, probs, dones_ab):
+  @tf.function(input_signature=(IMSPEC, IMSPEC, IMSPEC, INTSPEC, FLOATSPEC, BOOLSPEC))
+  def loss(self, states_a, states_b, states_k, action, probs, dones_ab):
+
     #tf.print('sa, sk, ea, ek, dak')
     #tf.print(states_a)
     #tf.print(states_k)
@@ -197,11 +198,12 @@ class Agent(tf.Module):
     Dak_a = tf.gather(Dak, action, batch_dims=1)
     Dab = self.distance(enca, encb)
     Dab_a = tf.gather(Dab, action, batch_dims=1)
+    Dbk_target = self.distance(encb, enck)
 
-    tf.debugging.check_numerics(Dak, 'Dak nan')
-    tf.debugging.check_numerics(Dak_a, 'Dak_a nan')
-    tf.debugging.check_numerics(Dab, 'Dab nan')
-    tf.debugging.check_numerics(Dab_a, 'Dab_a nan')
+    #tf.debugging.check_numerics(Dak, 'Dak nan')
+    #tf.debugging.check_numerics(Dak_a, 'Dak_a nan')
+    #tf.debugging.check_numerics(Dab, 'Dab nan')
+    #tf.debugging.check_numerics(Dab_a, 'Dab_a nan')
 
     # check if k == b. If so, target Dbk needs to be 0
     target = tf.reduce_min(Dbk_target, axis=-1)
@@ -218,13 +220,13 @@ class Agent(tf.Module):
 
     target = target - tf.cast(dones_ab, tf.float32) * (target - max_target)
 
-    tf.debugging.check_numerics(target, 'target nan')
-    tf.debugging.check_numerics(mask, 'mask nan')
+    #tf.debugging.check_numerics(target, 'target nan')
+    #tf.debugging.check_numerics(mask, 'mask nan')
 
     # apply importance sampling to the target
     weights = tf.pow(probs, -BETA)
     weights /= tf.reduce_max(weights)
-    tf.debugging.check_numerics(weights, 'weights nan')
+    #tf.debugging.check_numerics(weights, 'weights nan')
 
     TD_error = tf.abs(Dak_a - target) 
     TD_error = tf.pow(TD_error, ALPHA)
@@ -235,8 +237,8 @@ class Agent(tf.Module):
     # transitions are stochastic 
     loss_ab = tf.reduce_mean(tf.pow(weights * (Dab_a - Dab_target), 2))
     #loss += tf.reduce_mean(tf.abs(Dab_a - 1))
-    tf.debugging.check_numerics(loss_TD, 'loss_TD nan')
-    tf.debugging.check_numerics(loss_ab, 'loss_ab nan')
+    #tf.debugging.check_numerics(loss_TD, 'loss_TD nan')
+    #tf.debugging.check_numerics(loss_ab, 'loss_ab nan')
     
 
     regloss = 0

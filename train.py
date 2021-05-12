@@ -20,13 +20,14 @@ import agent
 from test import actionAccuracy, printAccuracy
 
 LOAD_SAVE = True
+PROFILE = True
 
 ''' 
 with alpha = 3 beta = 0, can use higher learning rate, and doesn't diverge (will temorarily diverge but always goes back)
 
 '''
 
-#TOYENV, 20x20
+#TOY_ENV, 20x20
 #ALPHA = 2
 #ALPHA = 0
 
@@ -61,7 +62,9 @@ LR = 0.00001  # works for 20x20 toyenv
 
 USE_TARGET = False
 SAVE_CYCLES = 1
-BATCH_SIZE = 512
+BATCH_SIZE = 16 # use small batch size, otherwise sample_rollout dominates runtime.
+BATCH_SIZE = 128
+# TODO try to optimize replay_buffer, so can increase batch size. 
 STEPS_BETWEEN_TRAINING = 512
 PARAM_UPDATES_PER_CYCLE = 500
 if TEST_LIMITED_STATES:
@@ -128,6 +131,7 @@ if __name__ == '__main__':
       def preprocess(s):
         s = tf.image.rgb_to_grayscale(s)
         s = tf.image.resize(s,(agent.INPUT_SHAPE[0],agent.INPUT_SHAPE[1]))
+        s = tf.squeeze(s)
         return tf.cast(s / 255.0, tf.float32)
     else:
       def preprocess(s):
@@ -144,16 +148,31 @@ if __name__ == '__main__':
     statelist = [state1, state2, state3, state4]
     statelist = [preprocess(s) for s in statelist]
     state = tf.stack(statelist, -1)
-
+    observation = statelist[-1] # most recent observation
 
     cycle = 0
     nanCount = 0 if not 'nanCount' in save else save['nanCount']
     total_rewards = 0
+    
 
-    replay_buffer = PrioritizedReplayBuffer(BUFFER_SIZE, 0.001)
+    saved_data_shape = tuple(agent.INPUT_SHAPE[:-1])
+    data_type_and_shape = ((np.float32, saved_data_shape), (np.int32, ()), (np.float32, ()))
+    replay_buffer = PrioritizedReplayBuffer(BUFFER_SIZE, 0.001, data_type_and_shape)
+
+    states_l  = statelist[:-1]
+    actions_l = [0 for _ in statelist[:-1]]
+    rewards_l = [0 for _ in statelist[:-1]]
+    dones_l   = [0 for _ in statelist[:-1]]
+
+    replay_buffer.addDatapoints(zip(zip(states_l, actions_l, rewards_l), dones_l))
 
     while True: 
 
+      if cycle == 1 and PROFILE:
+        tf.profiler.experimental.start('logdir')
+      if cycle == 4 and PROFILE:
+        tf.profiler.experimental.stop()
+  
 
       if USE_BUFFER:
         states_l, actions_l, rewards_l, dones_l = [],[],[],[]
@@ -167,6 +186,7 @@ if __name__ == '__main__':
           action = random.randrange(0,agent.ACTIONS)
 
           #print(agent.ACTION_MAP[action])
+          prev_observation = observation
           observation, reward, done, info = env.step(agent.ACTION_MAP[action])
           if CLIP_REWARDS:
             if reward > 1: reward = 1.0
@@ -183,7 +203,7 @@ if __name__ == '__main__':
           # need to copy to CPU so we don't use all the GPU memory
           with tf.device('/device:CPU:0'):
           #if True:
-            states_l.append(tf.identity(observation))
+            states_l.append(tf.identity(prev_observation))
             actions_l.append(tf.identity(action))
             rewards_l.append(tf.identity(reward))
             dones_l.append(done)
@@ -211,10 +231,6 @@ if __name__ == '__main__':
             state = tf.stack(statelist, -1)
 
 
-        with tf.device('/device:CPU:0'):
-          states_l.append(states)
-        
-
         # compute value targets (discounted returns to end of episode (or end of training))
         #rewards_l[-1] += (1 - dones_l[-1]) * actor.policy_and_value(states)[1]
         #with tf.device('/device:CPU:0'):
@@ -238,33 +254,34 @@ if __name__ == '__main__':
             # state represented by the first INPUT_SHAPE[-1] observations,
             # to the state represented by the last INPUT_SHAPE[-1] observations
 
-            b,dones_ab,indices,probs = replay_buffer.sampleRolloutBatch(BATCH_SIZE,agent.INPUT_SHAPE[-1] + 1)
+            rollout,dones_ab,indices,probs = replay_buffer.sampleRolloutBatch(BATCH_SIZE,agent.INPUT_SHAPE[-1] + 1)
             dones_ab = tf.cast(dones_ab, tf.bool)
+            state_roll, action_roll, rew_roll = rollout
 
             # get transition and action from rollouts
-            states_a = [ tf.stack([y[0] for y in x[:-1]], -1) for x in b ]
-            states_b = [ tf.stack([y[0] for y in x[1:]], -1) for x in b ]
-            actions_a = [ x[-1][1] for x in b ]
+            states_a = state_roll[:,:-1,...]
+            states_b = state_roll[:,1:,...]
+            actions_a = action_roll[:,-2,...]
+              
               
             # TODO should I use the k_probs?
-            states_k,_,_,_ = replay_buffer.sampleRolloutBatch(BATCH_SIZE,agent.INPUT_SHAPE[-1])
-            states_k = [ tf.stack([y[0] for y in x], -1) for x in states_k]
+            rollout_k,_,_,_ = replay_buffer.sampleRolloutBatch(BATCH_SIZE,agent.INPUT_SHAPE[-1])
+            states_k = rollout_k[0]
+            # move time dimension to last axis
+            (states_a, states_b, states_k) = (np.moveaxis(a,1,-1) for a in (states_a, states_b, states_k))
 
-            states_a, states_b, states_k, actions_a = [tf.stack(s) for s in [states_a, states_b, states_k, actions_a]]
             if agent.TOY_ENV:
               states_a, states_b, states_k = [s[...,-1:] for s in [states_a, states_b, states_k]] # remove time dimension
             #is this necessary?
-            states_a, states_b, states_k = [tf.reshape(x, [BATCH_SIZE] + agent.INPUT_SHAPE) for x in [states_a, states_b, states_k]]
-            Dbk_target = target_actor.distance_states(states_b, states_k)
-            return (states_a, states_b, states_k, actions_a, Dbk_target, dones_ab), indices, tf.cast(probs, tf.float32)
+            #states_a, states_b, states_k = [tf.reshape(x, [BATCH_SIZE] + agent.INPUT_SHAPE) for x in [states_a, states_b, states_k]]
+            return (states_a, states_b, states_k, actions_a, dones_ab), indices, tf.cast(probs, tf.float32)
 
       else: # agent.TOY_ENV and not USE_BUFFER:
 
         def getBatch():
           states_a, states_b, states_k, actions, dones_ab = env.getRandomTransitions(BATCH_SIZE)
-          Dbk_target = target_actor.distance_states(states_b, states_k)
           indices = [0] * BATCH_SIZE; probs = [1.] * BATCH_SIZE # not important
-          return (states_a, states_b, states_k, actions, Dbk_target, dones_ab), indices, tf.cast(probs, tf.float32)
+          return (states_a, states_b, states_k, actions, dones_ab), indices, tf.cast(probs, tf.float32)
           
         
       
@@ -272,9 +289,15 @@ if __name__ == '__main__':
 
       print('training distance')
       for b in range(PARAM_UPDATES_PER_CYCLE):
-        (states_a, states_b, states_k, actions_a, Dbk_target, dones_ab), indices, probs = getBatch()
+        #if b == 20:
+        #  tf.profiler.experimental.start('logdir')
+        #if b == 30:
+        #  tf.profiler.experimental.stop()
+
+        (states_a, states_b, states_k, actions_a, dones_ab), indices, probs = getBatch()
+
         with tf.GradientTape(watch_accessed_variables=True) as tape:
-          loss, td_error, mean_dist = actor.loss(states_a, states_b, states_k, actions_a, Dbk_target, probs, dones_ab)
+          loss, td_error, mean_dist = actor.loss(states_a, states_b, states_k, actions_a, probs, dones_ab)
           loss_TD = loss[0]; loss_ab = loss[1] 
           regloss = loss[2] * REGULARIZATION_WEIGHT
           
@@ -283,43 +306,48 @@ if __name__ == '__main__':
         grad = tape.gradient((loss_TD, loss_ab, regloss), actor.vars)
         #grad = [tf.clip_by_norm(g, GRAD_CLIP) for g in grad]
 
-        for v in actor.vars:
-          tf.debugging.check_numerics(v, 'nan before update')
-        foundNan = False
-        for g in grad:
-          if tf.math.reduce_any(tf.math.is_nan(g)):
-            foundNan = True
-            nanCount += 1
-            break
-            #print(g)
-            #tf.print(g, summarize=-1) # -1 indicates print everything
-            #code.interact(local=locals())
-          #tf.debugging.check_numerics(g, 'nan in gradients')
-        if foundNan:
-          print('nanCount: ' + str(nanCount))
-        if not foundNan:
-          agentOpt.apply_gradients(zip(grad, actor.vars))
-        for v in actor.vars:
-          tf.debugging.check_numerics(v, 'nan after update')
+        # TODO: get rid of this is_nan check, slows down everything and it's stupid anyway.
+        # need to figure out why these nans are happening.
+
+        #for v in actor.vars:
+        #  tf.debugging.check_numerics(v, 'nan before update')
+        #foundNan = False
+        #for g in grad:
+        #  if tf.math.reduce_any(tf.math.is_nan(g)):
+        #    foundNan = True
+        #    nanCount += 1
+        #    break
+        #    #print(g)
+        #    #tf.print(g, summarize=-1) # -1 indicates print everything
+        #    #code.interact(local=locals())
+        #  #tf.debugging.check_numerics(g, 'nan in gradients')
+        #if foundNan:
+        #  print('nanCount: ' + str(nanCount))
+        #if not foundNan:
+        agentOpt.apply_gradients(zip(grad, actor.vars))
+
+
+        #for v in actor.vars:
+        #  tf.debugging.check_numerics(v, 'nan after update')
         agent_losses += [loss]
         #printAccuracy(env, 100, actor)
         if agent.TOY_ENV and not b % 50:
           acc = actionAccuracy(env,100, actor)
           accs += [acc]
-          maxgrad = 0
-          for v in grad:
-            maxgrad = max(tf.reduce_max(v), maxgrad)
-          max_grads.append(maxgrad.numpy())
-          maxweight = 0
-          for v in actor.vars:
-            maxweight = max(tf.reduce_max(v), maxweight)
-          max_weights.append(maxweight.numpy())
+          #maxgrad = 0
+          #for v in grad:
+          #  maxgrad = max(tf.reduce_max(v), maxgrad)
+          #max_grads.append(maxgrad.numpy())
+          #maxweight = 0
+          #for v in actor.vars:
+          #  maxweight = max(tf.reduce_max(v), maxweight)
+          #max_weights.append(maxweight.numpy())
         if not b % 50:
           print('Mean Dak: ' + str(mean_dist))
           print(loss_str)
 
         # important to convert td_error to numpy first,
-        # ovtherwise it takes forever
+        # otherwise it takes forever
         if USE_BUFFER:
           replay_buffer.updateWeights(indices, td_error.numpy())
         #maxtd = max(maxtd, tf.reduce_max(td_error))

@@ -1,17 +1,23 @@
 import random
 from utility import loopListBefore
+import numpy as np
 
 
 class PrioritizedReplayBuffer():
-  def __init__(self, n, epsilon):
+  ''' 
+  n: size of buffer. must be a power of 2
+  epsilon: added to every priority entry in the replay buffer
+  data_types:  a list of (t, s) tuples, where for each
+    tuple, we need to store data of type t and shape s '''
+  def __init__(self, n, epsilon, data_types):
     assert n & (n-1) == 0 and n != 0, 'n must be a power of 2'
     self.n = n
     self.epsilon = epsilon
     # invariant: sumtree[k] == sumtree[2*k+1] + sumtree[2*k+2]
-    self.sumtree = [0 for _ in range(2 * n - 1)]
-    self.data = [None for _ in range(n)]
+    self.sumtree = np.zeros(shape=(2*n-1,))
+    self.data = [np.empty(dtype=dt, shape=((n,) + s)) for (dt,s) in data_types]
     self.datacount = 0
-    self.dones = [None for _ in range(n)]
+    self.dones = np.array([False for _ in range(n)])
     self.i = 0 # keeps track of where we are overwriting data in the buffer
     self.max_error = 1
     
@@ -34,25 +40,33 @@ class PrioritizedReplayBuffer():
   def uniformSampleState(self):
     k = random.randrange(self.datacount)
     i = k - self.n + 1
-    return self.data[i]
+    return tuple((d[i] for d in self.data))
     
 
-  # n is the number of states in the rollout
+  # 'rollout' is the number of states in the rollout
   def sampleRollout(self, rollout):
     while True:
       k = self.sampleSumtreeIndex()
       i = k - self.n + 1
       terminal_i = self.i
       if terminal_i < i: terminal_i += self.n
-      if (i + rollout < terminal_i) and not True in loopListBefore(self.dones, (i-1) % self.n, rollout-1):
+      # if the rollout would overlap the edge of the memory buffer 
+      # (self.i records slot for next input data), or if the rollout
+      # has a "done" that's not at the end, it is invalid and we need
+      # to try again.
+      if (not terminal_i in range(i+1,i+rollout)) and not True in np.take(self.dones, range(i,i+rollout-1),mode='wrap'):
         break
-    return loopListBefore(self.data,i,rollout), self.dones[i % self.n], k, self.sumtree[k]
+    data_r = tuple((np.take(d,range(i,i+rollout),axis=0,mode='wrap') for d in self.data))
+    return data_r, self.dones[i % self.n], k, self.sumtree[k]
 
   def uniformBatchState(self, batch_size):
-    batch = []
+    data_batches = tuple(([] for _ in self.data))
     for _ in range(batch_size):
-      batch.append(self.uniformSampleState())
-    return batch
+      state = self.uniformSampleState()
+      for j,d in enumerate(state):
+        data_batches[j].append(d)
+    data_batches = tuple((np.stack(d) for d in data_batches))
+    return data_batches
 
   ''' return values:
   batch: batch[i] is a list of subsequent entries of self.data
@@ -63,17 +77,19 @@ class PrioritizedReplayBuffer():
   probs: the prob of returning each returned rollout
   '''
   def sampleRolloutBatch(self, batch_size, rollout):
-    batch = []
+    data_batches = tuple(([] for _ in self.data))
     probs = []
     dones = []
     indices = []
     for _ in range(batch_size):
-      d,done,i,p = self.sampleRollout(rollout) 
-      batch.append(d)
+      rollouts,done,i,p = self.sampleRollout(rollout) 
+      for j,d in enumerate(rollouts):
+        data_batches[j].append(d)
       dones.append(done)
       indices.append(i)
       probs.append(p)
-    return batch, dones, indices, probs
+    data_batches = tuple((np.stack(d) for d in data_batches))
+    return data_batches, dones, indices, probs
 
   # indices are the indices into sumtree, as returned by sampleBatch
   def updateWeights(self, indices, weights):
@@ -109,10 +125,11 @@ class PrioritizedReplayBuffer():
     starti = self.i
     changed_indices = []
 
-    for xi,(x,done) in enumerate(dataGen):
+    for xi,(data,done) in enumerate(dataGen):
       if self.datacount < self.n:
         self.datacount += 1
-      self.data[self.i] = x
+      for j,d in enumerate(data):
+        self.data[j][self.i] = d
       self.dones[self.i] = done
       error = self.max_error if not errors else errors[xi]
       self.sumtree[self.n - 1 + self.i] = error + self.epsilon
@@ -123,7 +140,7 @@ class PrioritizedReplayBuffer():
   ''' to add one datapoint at a time, use this. While saving up all datapoints
   from an experience and then adding at once is more efficient, if we are
   trying to maximize experience replay buffer size, we want to add them
-  instantly (so we don't have to store them in memory)
+  instantly (so we don't have to store them in memory twice)
    
   TODO I've never actually tested this, wrote it and then decided not to use
   it.
@@ -133,7 +150,8 @@ class PrioritizedReplayBuffer():
       self.max_error = max(error, self.max_error)
     if self.datacount < self.n:
       self.datacount += 1
-    self.data[self.i] = x
+    for i,d in enumerate(data):
+      self.data[i][self.i] = d
     self.dones[self.i] = done
     error = self.max_error if not error else error
     self.sumtree[self.n - 1 + self.i] = error + self.epsilon
@@ -143,17 +161,17 @@ class PrioritizedReplayBuffer():
 
       
 if __name__ == '__main__':
-  buf =  PrioritizedReplayBuffer(16,0.001)
-  buf.addDatapoints([-i for i in range(16)])
+  buf =  PrioritizedReplayBuffer(16,0.001, ((np.int32, ()),))
+  buf.addDatapoints([((-i,),False) for i in range(24)])
   for i in range(10):
-    sample, indices = buf.sampleBatch(5)
+    sample, dones, indices, probs = buf.sampleRolloutBatch(20,5)
     print('sample: ' + str(sample))
     print('indices: ' + str(indices))
     buf.updateWeights(indices, [i for _ in indices])
     input(buf.sumtree)
-  buf.addDatapoints([i for i in range(8)])
+  buf.addDatapoints([((i,),False) for i in range(8)])
   input('buf.data ' + str(buf.data))
-  buf.addDatapoints([i for i in range(8)])
+  buf.addDatapoints([((i,),False) for i in range(8)])
   input('buf.data ' + str(buf.data))
   input('buf.n' + str(buf.sumtree))
 
