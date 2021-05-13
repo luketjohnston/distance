@@ -21,6 +21,7 @@ from test import actionAccuracy, printAccuracy
 
 LOAD_SAVE = True
 PROFILE = True
+CPU_CORES = 6
 
 ''' 
 with alpha = 3 beta = 0, can use higher learning rate, and doesn't diverge (will temorarily diverge but always goes back)
@@ -62,7 +63,7 @@ LR = 0.00001  # works for 20x20 toyenv
 
 USE_TARGET = False
 SAVE_CYCLES = 1
-BATCH_SIZE = 16 # use small batch size, otherwise sample_rollout dominates runtime.
+BATCH_SIZE = 256 # use small batch size, otherwise sample_rollout dominates runtime.
 BATCH_SIZE = 128
 # TODO try to optimize replay_buffer, so can increase batch size. 
 STEPS_BETWEEN_TRAINING = 512
@@ -170,7 +171,7 @@ if __name__ == '__main__':
 
       if cycle == 1 and PROFILE:
         tf.profiler.experimental.start('logdir')
-      if cycle == 4 and PROFILE:
+      if cycle == 2 and PROFILE:
         tf.profiler.experimental.stop()
   
 
@@ -247,54 +248,74 @@ if __name__ == '__main__':
             return zip(zip(states_l, actions_l, rewards_l), dones_l)
           replay_buffer.addDatapoints(dataGen())
 
-        def getBatch():
+        def getDatapoint():
           with tf.device('/device:CPU:0'):
             # get rollout of length (INPUT_SHAPE[-1] + 1
             # this rollout is then stacked to get the transition from the
             # state represented by the first INPUT_SHAPE[-1] observations,
             # to the state represented by the last INPUT_SHAPE[-1] observations
 
-            rollout,dones_ab,indices,probs = replay_buffer.sampleRolloutBatch(BATCH_SIZE,agent.INPUT_SHAPE[-1] + 1)
-            dones_ab = tf.cast(dones_ab, tf.bool)
-            state_roll, action_roll, rew_roll = rollout
+            rollout,done_ab,index,prob = replay_buffer.sampleRollout(agent.INPUT_SHAPE[-1] + 1)
+            done_ab = tf.cast(done_ab, tf.bool)
+            state_roll, action_roll, reward_roll = rollout
 
             # get transition and action from rollouts
-            states_a = state_roll[:,:-1,...]
-            states_b = state_roll[:,1:,...]
-            actions_a = action_roll[:,-2,...]
+            a = state_roll[:-1,...]
+            b = state_roll[1:,...]
+            action_a = action_roll[-2,...]
               
               
             # TODO should I use the k_probs?
-            rollout_k,_,_,_ = replay_buffer.sampleRolloutBatch(BATCH_SIZE,agent.INPUT_SHAPE[-1])
-            states_k = rollout_k[0]
+            (k, _, _),_,_,_ = replay_buffer.sampleRollout(agent.INPUT_SHAPE[-1])
             # move time dimension to last axis
-            (states_a, states_b, states_k) = (np.moveaxis(a,1,-1) for a in (states_a, states_b, states_k))
+            # TODO is this slow? should I refactor agent.py so time axis is before channels axes?
+            (states_a, states_b, states_k) = (np.moveaxis(a,0,-1) for a in (a, b, k))
 
             if agent.TOY_ENV:
               states_a, states_b, states_k = [s[...,-1:] for s in [states_a, states_b, states_k]] # remove time dimension
-            #is this necessary?
-            #states_a, states_b, states_k = [tf.reshape(x, [BATCH_SIZE] + agent.INPUT_SHAPE) for x in [states_a, states_b, states_k]]
-            return (states_a, states_b, states_k, actions_a, dones_ab), indices, tf.cast(probs, tf.float32)
+            return (states_a, states_b, states_k, action_a, done_ab), index, tf.cast(prob, tf.float32)
 
       else: # agent.TOY_ENV and not USE_BUFFER:
 
-        def getBatch():
-          states_a, states_b, states_k, actions, dones_ab = env.getRandomTransitions(BATCH_SIZE)
-          indices = [0] * BATCH_SIZE; probs = [1.] * BATCH_SIZE # not important
-          return (states_a, states_b, states_k, actions, dones_ab), indices, tf.cast(probs, tf.float32)
+        def getDatapoint():
+          a, b, k, action, done_ab = [tf.squeeze(s,axis=0) for s in env.getRandomTransitions(1)]
+          index = 0; prob = 1. # indices and probs not important when not using buffer
+
+          return (a, b, k, action, done_ab), index, tf.cast(prob, tf.float32)
           
+
+      def datasetGenerator():
+        while True:
+          yield getDatapoint()
+      output_sig = ((
+        tf.TensorSpec(agent.INPUT_SHAPE),
+        tf.TensorSpec(agent.INPUT_SHAPE),
+        tf.TensorSpec(agent.INPUT_SHAPE),
+        tf.TensorSpec((), dtype=tf.int32),
+        tf.TensorSpec((), dtype=tf.bool)),
+        tf.TensorSpec((), dtype=tf.int32),
+        tf.TensorSpec((),))
+
+      def makeDataset():
+        return tf.data.Dataset.from_generator(datasetGenerator, output_signature=output_sig)
+
+      dataset = tf.data.Dataset.range(CPU_CORES)
+      dataset = dataset.interleave(lambda x: makeDataset(), cycle_length = 1, num_parallel_calls = 1, deterministic=False) 
+      #dataset = dataset.interleave(lambda x: makeDataset(), cycle_length = tf.data.AUTOTUNE, num_parallel_calls = tf.data.AUTOTUNE, deterministic=False) 
+      dataset = dataset.batch(BATCH_SIZE)
+      dataset = dataset.prefetch(buffer_size=CPU_CORES)
+
         
       
       start = timeit.default_timer()
 
       print('training distance')
-      for b in range(PARAM_UPDATES_PER_CYCLE):
+      for b, ((states_a, states_b, states_k, actions_a, dones_ab), indices, probs) in enumerate(dataset):
+        if b == PARAM_UPDATES_PER_CYCLE: break
         #if b == 20:
         #  tf.profiler.experimental.start('logdir')
         #if b == 30:
         #  tf.profiler.experimental.stop()
-
-        (states_a, states_b, states_k, actions_a, dones_ab), indices, probs = getBatch()
 
         with tf.GradientTape(watch_accessed_variables=True) as tape:
           loss, td_error, mean_dist = actor.loss(states_a, states_b, states_k, actions_a, probs, dones_ab)
@@ -349,7 +370,7 @@ if __name__ == '__main__':
         # important to convert td_error to numpy first,
         # otherwise it takes forever
         if USE_BUFFER:
-          replay_buffer.updateWeights(indices, td_error.numpy())
+          replay_buffer.updateWeights(indices.numpy(), td_error.numpy())
         #maxtd = max(maxtd, tf.reduce_max(td_error))
         #print('MAX TD: ' + str(maxtd))
 

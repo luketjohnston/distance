@@ -19,8 +19,8 @@ tf.config.experimental.set_memory_growth(physical_devices[0], True)
 USE_LOG = True
 
 TOY_ENV = True
-TOYENV_SIZE = 10
-USE_COORDS = True
+TOYENV_SIZE = 80
+USE_COORDS = False
 DEADEND = False
 
 ENVIRONMENT = 'MontezumaRevengeDeterministic-v4'
@@ -50,7 +50,7 @@ else:
   ACTIONS = 8
   ACTION_MAP = [0,1,2,3,4,5,11,12]
 
-ALPHA = 0
+ALPHA = 0.5
 BETA = 0
 
 
@@ -76,8 +76,8 @@ ENCODING_SIZE = 64
 
 
 IMSPEC = tf.TensorSpec([None] + INPUT_SHAPE,)
-if ENVIRONMENT == 'CartPole-v1':
-  IMSPEC = tf.TensorSpec([None, 4])
+#if ENVIRONMENT == 'CartPole-v1':
+#  IMSPEC = tf.TensorSpec([None, 4])
 
 INTSPEC = tf.TensorSpec([None], dtype=tf.int32)
 FLOATSPEC = tf.TensorSpec([None],)
