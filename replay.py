@@ -14,7 +14,7 @@ class PrioritizedReplayBuffer():
     self.n = n
     self.epsilon = epsilon
     # invariant: sumtree[k] == sumtree[2*k+1] + sumtree[2*k+2]
-    self.sumtree = np.zeros(shape=(2*n-1,))
+    self.sumtree = np.zeros(shape=(2*n-1)) # initialized as all zeros
     self.data = [np.empty(dtype=dt, shape=((n,) + s)) for (dt,s) in data_types]
     self.datacount = 0
     self.dones = np.array([False for _ in range(n)])
@@ -41,10 +41,14 @@ class PrioritizedReplayBuffer():
     k = random.randrange(self.datacount)
     i = k - self.n + 1
     return tuple((d[i] for d in self.data))
-    
 
-  # 'rollout' is the number of states in the rollout
-  def sampleRollout(self, rollout):
+  # returns the rollout of length rollout, starting at index i in self.data
+  def getRolloutAt(self, i, rollout):
+    data_r = tuple((np.take(d,range(i,i+rollout),axis=0,mode='wrap') for d in self.data))
+    k = i + self.n - 1
+    return data_r, self.dones[i % self.n], k, self.sumtree[k]
+
+  def sampleRolloutIndex(self,rollout):
     while True:
       k = self.sampleSumtreeIndex()
       i = k - self.n + 1
@@ -55,9 +59,12 @@ class PrioritizedReplayBuffer():
       # has a "done" that's not at the end, it is invalid and we need
       # to try again.
       if (not terminal_i in range(i+1,i+rollout)) and not True in np.take(self.dones, range(i,i+rollout-1),mode='wrap'):
-        break
-    data_r = tuple((np.take(d,range(i,i+rollout),axis=0,mode='wrap') for d in self.data))
-    return data_r, self.dones[i % self.n], k, self.sumtree[k]
+        return i
+
+  # 'rollout' is the number of states in the rollout
+  def sampleRollout(self, rollout):
+    i = self.sampleRolloutIndex(rollout)
+    return self.getRolloutAt(i, rollout)
 
   def uniformBatchState(self, batch_size):
     data_batches = tuple(([] for _ in self.data))

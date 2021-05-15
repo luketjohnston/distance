@@ -19,8 +19,8 @@ tf.config.experimental.set_memory_growth(physical_devices[0], True)
 USE_LOG = True
 
 TOY_ENV = True
-TOYENV_SIZE = 80
-USE_COORDS = False
+TOYENV_SIZE = 10
+USE_COORDS = True
 DEADEND = False
 
 ENVIRONMENT = 'MontezumaRevengeDeterministic-v4'
@@ -50,7 +50,7 @@ else:
   ACTIONS = 8
   ACTION_MAP = [0,1,2,3,4,5,11,12]
 
-ALPHA = 0.5
+ALPHA = 0
 BETA = 0
 
 
@@ -75,16 +75,21 @@ if TOY_ENV:
 ENCODING_SIZE = 64
 
 
-IMSPEC = tf.TensorSpec([None] + INPUT_SHAPE,)
+# TODO can't change to float16, dunno why
+FLOAT_TYPE = tf.float32
+NP_FLOAT_TYPE = np.float32
+NP_INT_TYPE = np.int32
+INT_TYPE = tf.int32
+IMSPEC = tf.TensorSpec([None] + INPUT_SHAPE, dtype=FLOAT_TYPE)
 #if ENVIRONMENT == 'CartPole-v1':
 #  IMSPEC = tf.TensorSpec([None, 4])
 
-INTSPEC = tf.TensorSpec([None], dtype=tf.int32)
-FLOATSPEC = tf.TensorSpec([None],)
-DISTSPEC = tf.TensorSpec([None, ACTIONS],)
+INTSPEC = tf.TensorSpec([None], dtype=INT_TYPE)
+FLOATSPEC = tf.TensorSpec([None], dtype=FLOAT_TYPE)
+DISTSPEC = tf.TensorSpec([None, ACTIONS], dtype=FLOAT_TYPE)
 BOOLSPEC = tf.TensorSpec([None], dtype=tf.bool)
-LOGITSPEC = tf.TensorSpec([None, ACTIONS],)
-ENCSPEC = tf.TensorSpec([None, ENCODING_SIZE],)
+LOGITSPEC = tf.TensorSpec([None, ACTIONS], dtype=FLOAT_TYPE)
+ENCSPEC = tf.TensorSpec([None, ENCODING_SIZE], dtype=FLOAT_TYPE)
 
 
 
@@ -123,15 +128,15 @@ class Agent(tf.Module):
       self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(f,f,size[2],c)), name='agent_conv'))
       size = getConvOutputSizeValid(size[0], size[1], f, c, s)
 
-    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(np.prod(size),HIDDEN_NEURONS)), name='Encoder_w'))
-    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(HIDDEN_NEURONS,)), name='Encoder_b'))
-    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(HIDDEN_NEURONS,ENCODING_SIZE)), name='Encoder_o'))
-    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(ENCODING_SIZE,)), name='Encoder_bo'))
+    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(np.prod(size),HIDDEN_NEURONS),dtype=FLOAT_TYPE), name='Encoder_w', dtype=FLOAT_TYPE))
+    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(HIDDEN_NEURONS,),dtype=FLOAT_TYPE), name='Encoder_b', dtype=FLOAT_TYPE))
+    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(HIDDEN_NEURONS,ENCODING_SIZE),dtype=FLOAT_TYPE), name='Encoder_o', dtype=FLOAT_TYPE))
+    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(ENCODING_SIZE,),dtype=FLOAT_TYPE), name='Encoder_bo', dtype=FLOAT_TYPE))
 
-    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(ENCODING_SIZE*2, HIDDEN_NEURONS)), name='Distance_w'))
-    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(HIDDEN_NEURONS,)), name='Distance_b'))
-    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(HIDDEN_NEURONS,ACTIONS)), name='Distance_o'))
-    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(ACTIONS,)), name='Distance_bo'))
+    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(ENCODING_SIZE*2, HIDDEN_NEURONS),dtype=FLOAT_TYPE), name='Distance_w', dtype=FLOAT_TYPE))
+    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(HIDDEN_NEURONS,),dtype=FLOAT_TYPE), name='Distance_b', dtype=FLOAT_TYPE))
+    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(HIDDEN_NEURONS,ACTIONS),dtype=FLOAT_TYPE), name='Distance_o', dtype=FLOAT_TYPE))
+    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(ACTIONS,),dtype=FLOAT_TYPE), name='Distance_bo', dtype=FLOAT_TYPE))
 
 
   ''' encodes state'''
@@ -207,7 +212,7 @@ class Agent(tf.Module):
 
     # check if k == b. If so, target Dbk needs to be 0
     target = tf.reduce_min(Dbk_target, axis=-1)
-    mask = tf.squeeze(tf.reduce_max(tf.cast(tf.not_equal(encb, enck), tf.float32), axis=1))
+    mask = tf.squeeze(tf.reduce_max(tf.cast(tf.not_equal(encb, enck), FLOAT_TYPE), axis=1))
     
     if not USE_LOG:
       target = tf.stop_gradient(1 + DISCOUNT * target * mask)
@@ -218,7 +223,7 @@ class Agent(tf.Module):
       Dab_target = 0
       max_target = 10
 
-    target = target - tf.cast(dones_ab, tf.float32) * (target - max_target)
+    target = target - tf.cast(dones_ab, FLOAT_TYPE) * (target - max_target)
 
     #tf.debugging.check_numerics(target, 'target nan')
     #tf.debugging.check_numerics(mask, 'mask nan')

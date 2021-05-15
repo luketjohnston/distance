@@ -1,6 +1,8 @@
 import tensorflow as tf
 import code
 from replay import PrioritizedReplayBuffer
+import multiprocessing as mp
+import queue
 import timeit
 from queue import Queue
 from tensorflow.keras.layers import Conv2D, Flatten, Dense
@@ -23,6 +25,8 @@ LOAD_SAVE = True
 PROFILE = True
 CPU_CORES = 6
 
+TERM_FLAG = 'terminate'
+
 ''' 
 with alpha = 3 beta = 0, can use higher learning rate, and doesn't diverge (will temorarily diverge but always goes back)
 
@@ -34,6 +38,7 @@ with alpha = 3 beta = 0, can use higher learning rate, and doesn't diverge (will
 
 USE_BUFFER = True
 TEST_LIMITED_STATES = False
+BUFFER_SAMPLE_PROCESSES = 6
 
 
 OPTIMIZER = 'SGD' # 'Adam' or 'RMSprop' or 'SGD'
@@ -44,7 +49,7 @@ GRAD_CLIP = 0.01
 REGULARIZATION_WEIGHT = 0.0
 
 BUFFER_SIZE = 2**18 # 2**17 is max we can hold in memory it seems
-#BUFFER_SIZE = 2**10
+BUFFER_SIZE = 2**10
 #BUFFER_SIZE = 128
 
 
@@ -58,6 +63,7 @@ LR = 0.00001
 LR = 0.01 
 LR = 0.0001  # works for 20x20 toyenv
 LR = 0.00001  # works for 20x20 toyenv
+#LR = 0.001  
 #LR = 0.000001  # too low for 20x20 toyenv, log
 
 
@@ -65,9 +71,12 @@ USE_TARGET = False
 SAVE_CYCLES = 1
 BATCH_SIZE = 256 # use small batch size, otherwise sample_rollout dominates runtime.
 BATCH_SIZE = 128
+#BATCH_SIZE = 512
 # TODO try to optimize replay_buffer, so can increase batch size. 
 STEPS_BETWEEN_TRAINING = 512
-PARAM_UPDATES_PER_CYCLE = 500
+#STEPS_BETWEEN_TRAINING = 64
+PARAM_UPDATES_PER_CYCLE = 100 * BUFFER_SAMPLE_PROCESSES # should be multiple of BUFFER_SAMPLE_PROCESSES
+#PARAM_UPDATES_PER_CYCLE = 50
 if TEST_LIMITED_STATES:
   PARAM_UPDATES_PER_CYCLE *= 999999
 #TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP  = 20
@@ -160,6 +169,85 @@ if __name__ == '__main__':
     data_type_and_shape = ((np.float32, saved_data_shape), (np.int32, ()), (np.float32, ()))
     replay_buffer = PrioritizedReplayBuffer(BUFFER_SIZE, 0.001, data_type_and_shape)
 
+
+    # TODO: add support for TOY_ENV and USE_BUFFER==False
+    def getDataProcess(dataQueue, indicesQueue):
+      for i in range(PARAM_UPDATES_PER_CYCLE // BUFFER_SAMPLE_PROCESSES):
+        batch = []
+        indices = indicesQueue.get()
+        for (i1,i2) in indices:
+          rollout, done_ab, index, prob = replay_buffer.getRolloutAt(i1, agent.INPUT_SHAPE[-1]+1)
+          state_roll, action_roll, reward_roll = rollout
+          # get transition and action from rollouts
+          a = state_roll[:-1,...]
+          b = state_roll[1:,...]
+          action_a = action_roll[-2,...]
+          # TODO should I use the k_probs?
+          (k, _, _),_,_,_ = replay_buffer.getRolloutAt(i2, agent.INPUT_SHAPE[-1])
+          # move time dimension to last axis
+          # TODO is this slow? should I refactor agent.py so time axis is before channels axes?
+          (states_a, states_b, states_k) = (np.moveaxis(a,0,-1) for a in (a, b, k))
+          if agent.TOY_ENV:
+            states_a, states_b, states_k = [s[...,-1:] for s in [states_a, states_b, states_k]] # remove time dimension
+          prob = prob.astype(agent.NP_FLOAT_TYPE)
+          action_a = action_a.astype(agent.NP_INT_TYPE)
+          batch.append([states_a, states_b, states_k, action_a, done_ab, index, prob])
+        a,b,k,act,done,ind,prob = [np.stack(x) for x in zip(*batch)]
+        ind = ind.astype(agent.NP_INT_TYPE)
+        dataQueue.put((a,b,k,act,done,ind,prob))
+
+    def clearQueue(q):
+      while True:
+        try:
+          q.get_nowait()
+        except queue.Empty:
+          return
+
+    dataQueue = mp.Queue(maxsize = BUFFER_SAMPLE_PROCESSES * 4) # no particular reason for this size. Want to be able to buffer a few new datapoints if possible
+    # needs to be big enough so it never blocks 
+    indicesQueue = mp.Queue(maxsize = PARAM_UPDATES_PER_CYCLE)
+
+
+    def putIndexBatchInQueue():
+      batch = []
+      for i in range(BATCH_SIZE):
+        i1 = replay_buffer.sampleRolloutIndex(agent.INPUT_SHAPE[-1] + 1)
+        i2 = replay_buffer.sampleRolloutIndex(agent.INPUT_SHAPE[-1])
+        batch.append((i1,i2))
+      try:
+        indicesQueue.put_nowait(batch)
+      except queue.Full:
+        pass
+
+    if agent.TOY_ENV and not USE_BUFFER:
+      def datasetGenerator():
+        while True:
+          a, b, k, action, done_ab = env.getRandomTransitions(BATCH_SIZE)
+          index = [0] * BATCH_SIZE; prob = [1.] * BATCH_SIZE # indices and probs not important when not using buffer
+          yield (a, b, k, action, done_ab, index, prob)
+      dataiter = iter(datasetGenerator())
+    else:
+      def datasetGenerator():
+        while True:
+          data  =  dataQueue.get()
+          yield data
+
+      output_sig = (
+        agent.IMSPEC,
+        agent.IMSPEC,
+        agent.IMSPEC,
+        agent.INTSPEC,
+        agent.BOOLSPEC,
+        agent.INTSPEC,
+        agent.FLOATSPEC)
+
+      dataset = tf.data.Dataset.from_generator(datasetGenerator, output_signature=output_sig)
+      ###dataset = dataset.interleave(lambda x: makeDataset(), cycle_length = tf.data.AUTOTUNE, num_parallel_calls = tf.data.AUTOTUNE, deterministic=False) 
+
+      dataset = dataset.prefetch(buffer_size=tf.data.AUTOTUNE) 
+      dataiter = iter(dataset)
+
+    # TODO: should I convert all these to numpy arrays? probably...
     states_l  = statelist[:-1]
     actions_l = [0 for _ in statelist[:-1]]
     rewards_l = [0 for _ in statelist[:-1]]
@@ -247,134 +335,108 @@ if __name__ == '__main__':
             # before modification, ignored last entry of below (return[-1])
             return zip(zip(states_l, actions_l, rewards_l), dones_l)
           replay_buffer.addDatapoints(dataGen())
+          print('done adding to replay_buffer')
 
-        def getDatapoint():
-          with tf.device('/device:CPU:0'):
-            # get rollout of length (INPUT_SHAPE[-1] + 1
-            # this rollout is then stacked to get the transition from the
-            # state represented by the first INPUT_SHAPE[-1] observations,
-            # to the state represented by the last INPUT_SHAPE[-1] observations
 
-            rollout,done_ab,index,prob = replay_buffer.sampleRollout(agent.INPUT_SHAPE[-1] + 1)
-            done_ab = tf.cast(done_ab, tf.bool)
-            state_roll, action_roll, reward_roll = rollout
+      try: # need to catch KeyboardInterrupt, to handle terminating processes
 
-            # get transition and action from rollouts
-            a = state_roll[:-1,...]
-            b = state_roll[1:,...]
-            action_a = action_roll[-2,...]
-              
-              
-            # TODO should I use the k_probs?
-            (k, _, _),_,_,_ = replay_buffer.sampleRollout(agent.INPUT_SHAPE[-1])
-            # move time dimension to last axis
-            # TODO is this slow? should I refactor agent.py so time axis is before channels axes?
-            (states_a, states_b, states_k) = (np.moveaxis(a,0,-1) for a in (a, b, k))
+        #index_proc = mp.Process(target=indexProcess, args=(indicesQueue, updateQueue))
+        ##index_proc.daemon = True
+        #index_proc.start()
 
-            if agent.TOY_ENV:
-              states_a, states_b, states_k = [s[...,-1:] for s in [states_a, states_b, states_k]] # remove time dimension
-            return (states_a, states_b, states_k, action_a, done_ab), index, tf.cast(prob, tf.float32)
+        # have to start processes here (can't have them running when replay_buffer is being updated
+        # with new datapoints)
+        sample_procs = []
+        for p in range(BUFFER_SAMPLE_PROCESSES):
+          sample_procs.append(mp.Process(target = getDataProcess, args=(dataQueue, indicesQueue)))
+          sample_procs[-1].start()
 
-      else: # agent.TOY_ENV and not USE_BUFFER:
-
-        def getDatapoint():
-          a, b, k, action, done_ab = [tf.squeeze(s,axis=0) for s in env.getRandomTransitions(1)]
-          index = 0; prob = 1. # indices and probs not important when not using buffer
-
-          return (a, b, k, action, done_ab), index, tf.cast(prob, tf.float32)
-          
-
-      def datasetGenerator():
-        while True:
-          yield getDatapoint()
-      output_sig = ((
-        tf.TensorSpec(agent.INPUT_SHAPE),
-        tf.TensorSpec(agent.INPUT_SHAPE),
-        tf.TensorSpec(agent.INPUT_SHAPE),
-        tf.TensorSpec((), dtype=tf.int32),
-        tf.TensorSpec((), dtype=tf.bool)),
-        tf.TensorSpec((), dtype=tf.int32),
-        tf.TensorSpec((),))
-
-      def makeDataset():
-        return tf.data.Dataset.from_generator(datasetGenerator, output_signature=output_sig)
-
-      dataset = tf.data.Dataset.range(CPU_CORES)
-      dataset = dataset.interleave(lambda x: makeDataset(), cycle_length = 1, num_parallel_calls = 1, deterministic=False) 
-      #dataset = dataset.interleave(lambda x: makeDataset(), cycle_length = tf.data.AUTOTUNE, num_parallel_calls = tf.data.AUTOTUNE, deterministic=False) 
-      dataset = dataset.batch(BATCH_SIZE)
-      dataset = dataset.prefetch(buffer_size=CPU_CORES)
-
+        for p in sample_procs:
+          putIndexBatchInQueue()
         
-      
-      start = timeit.default_timer()
+        start = timeit.default_timer()
 
-      print('training distance')
-      for b, ((states_a, states_b, states_k, actions_a, dones_ab), indices, probs) in enumerate(dataset):
-        if b == PARAM_UPDATES_PER_CYCLE: break
-        #if b == 20:
-        #  tf.profiler.experimental.start('logdir')
-        #if b == 30:
-        #  tf.profiler.experimental.stop()
+        print('training distance')
+        for b in range(PARAM_UPDATES_PER_CYCLE):
+          (states_a, states_b, states_k, actions_a, dones_ab, indices, probs) = next(dataiter)
 
-        with tf.GradientTape(watch_accessed_variables=True) as tape:
-          loss, td_error, mean_dist = actor.loss(states_a, states_b, states_k, actions_a, probs, dones_ab)
-          loss_TD = loss[0]; loss_ab = loss[1] 
-          regloss = loss[2] * REGULARIZATION_WEIGHT
-          
+          #if b == 20:
+          #  tf.profiler.experimental.start('logdir')
+          #if b == 30:
+          #  tf.profiler.experimental.stop()
 
-          loss_str = ''.join('{:6f}, '.format(lossv) for lossv in loss)
-        grad = tape.gradient((loss_TD, loss_ab, regloss), actor.vars)
-        #grad = [tf.clip_by_norm(g, GRAD_CLIP) for g in grad]
+          with tf.GradientTape(watch_accessed_variables=True) as tape:
+            loss, td_error, mean_dist = actor.loss(states_a, states_b, states_k, actions_a, probs, dones_ab)
+            loss_TD = loss[0]; loss_ab = loss[1] 
+            regloss = loss[2] * REGULARIZATION_WEIGHT
+            
 
-        # TODO: get rid of this is_nan check, slows down everything and it's stupid anyway.
-        # need to figure out why these nans are happening.
+            loss_str = ''.join('{:6f}, '.format(lossv) for lossv in loss)
+          grad = tape.gradient((loss_TD, loss_ab, regloss), actor.vars)
+          #grad = [tf.clip_by_norm(g, GRAD_CLIP) for g in grad]
 
-        #for v in actor.vars:
-        #  tf.debugging.check_numerics(v, 'nan before update')
-        #foundNan = False
-        #for g in grad:
-        #  if tf.math.reduce_any(tf.math.is_nan(g)):
-        #    foundNan = True
-        #    nanCount += 1
-        #    break
-        #    #print(g)
-        #    #tf.print(g, summarize=-1) # -1 indicates print everything
-        #    #code.interact(local=locals())
-        #  #tf.debugging.check_numerics(g, 'nan in gradients')
-        #if foundNan:
-        #  print('nanCount: ' + str(nanCount))
-        #if not foundNan:
-        agentOpt.apply_gradients(zip(grad, actor.vars))
+          # TODO: get rid of this is_nan check, slows down everything and it's stupid anyway.
+          # need to figure out why these nans are happening.
 
-
-        #for v in actor.vars:
-        #  tf.debugging.check_numerics(v, 'nan after update')
-        agent_losses += [loss]
-        #printAccuracy(env, 100, actor)
-        if agent.TOY_ENV and not b % 50:
-          acc = actionAccuracy(env,100, actor)
-          accs += [acc]
-          #maxgrad = 0
-          #for v in grad:
-          #  maxgrad = max(tf.reduce_max(v), maxgrad)
-          #max_grads.append(maxgrad.numpy())
-          #maxweight = 0
           #for v in actor.vars:
-          #  maxweight = max(tf.reduce_max(v), maxweight)
-          #max_weights.append(maxweight.numpy())
-        if not b % 50:
-          print('Mean Dak: ' + str(mean_dist))
-          print(loss_str)
+          #  tf.debugging.check_numerics(v, 'nan before update')
+          #foundNan = False
+          #for g in grad:
+          #  if tf.math.reduce_any(tf.math.is_nan(g)):
+          #    foundNan = True
+          #    nanCount += 1
+          #    break
+          #    #print(g)
+          #    #tf.print(g, summarize=-1) # -1 indicates print everything
+          #    #code.interact(local=locals())
+          #  #tf.debugging.check_numerics(g, 'nan in gradients')
+          #if foundNan:
+          #  print('nanCount: ' + str(nanCount))
+          #if not foundNan:
+          agentOpt.apply_gradients(zip(grad, actor.vars))
 
-        # important to convert td_error to numpy first,
-        # otherwise it takes forever
-        if USE_BUFFER:
-          replay_buffer.updateWeights(indices.numpy(), td_error.numpy())
-        #maxtd = max(maxtd, tf.reduce_max(td_error))
-        #print('MAX TD: ' + str(maxtd))
 
+          #for v in actor.vars:
+          #  tf.debugging.check_numerics(v, 'nan after update')
+          agent_losses += [loss]
+          #printAccuracy(env, 100, actor)
+          if agent.TOY_ENV and not b % 50:
+            acc = actionAccuracy(env,100, actor)
+            accs += [acc]
+            #maxgrad = 0
+            #for v in grad:
+            #  maxgrad = max(tf.reduce_max(v), maxgrad)
+            #max_grads.append(maxgrad.numpy())
+            #maxweight = 0
+            #for v in actor.vars:
+            #  maxweight = max(tf.reduce_max(v), maxweight)
+            #max_weights.append(maxweight.numpy())
+          if not b % 50:
+            print('Mean Dak: ' + str(mean_dist))
+            print(loss_str)
 
+          # important to convert td_error to numpy first,
+          # otherwise it takes forever
+          if USE_BUFFER:
+            # TODO is it possibly to pass tensor to process (without converting to numpy?) 
+            #updateQueue.put((indices.numpy(), td_error.numpy()))
+            replay_buffer.updateWeights(indices.numpy(), td_error.numpy())
+            putIndexBatchInQueue()
+
+          #maxtd = max(maxtd, tf.reduce_max(td_error))
+          #print('MAX TD: ' + str(maxtd))
+
+          if b == PARAM_UPDATES_PER_CYCLE - 1: break
+
+        for p in sample_procs:
+          p.join()
+        clearQueue(indicesQueue)
+
+      except KeyboardInterrupt:
+        print("GOT KEYBOARD INT")
+        for p in sample_procs:
+          p.terminate()
+        raise KeyboardInterrupt
 
       end = timeit.default_timer()
       print("TIME: " + str(end - start))
