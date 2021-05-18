@@ -6,7 +6,7 @@
 The ultimate goal of this project is to develop a method of reinforcement learning
 with goals (where a goalsetter sets a goal, and then the agent tries to achieve
 that goal). The motivation for this is that goal-setting seems to me to be a better approximation
-of hows humans think than current methods (which mostly fall into two broad categories - "reflex" 
+of how humans think than current methods (which mostly fall into two broad categories - "reflex" 
 learning, where a function approximator (i.e. neural network) learns how to map states to actions directly, 
 and "tree search" methods, where a learned dynamics model is used to search the decision tree for
 the best actions). TODO cite a few examples and cite some exceptions. While humans certainly
@@ -23,12 +23,12 @@ idea was that if asymmetric distance function could be learned between states, t
 be trained with intrinsic rewards for moving closer to the goal state. However, I soon realized that
 a simpler approach could allow simultaneous learning of the distance function and the 
 'actor' that moves from one state to another: if we represent the distance function
-D(s1,s2,a) => R
-as a funciton mapping current state, goal state, and action to a distance, where D(s1,s2,a) = (distance from s1 to s2 after taking action a),
-then this function can be learned in a similar manner to standard Q-learning: for each transition (s1,s2,a) with goal state sk,
+D(s,g,a) => R
+as a funciton mapping current state (s), goal state (g), and action (a) to a distance, where D(s,g,a) = (distance from s to g after taking action a),
+then this function can be learned in a similar manner to standard Q-learning: for each transition (s1,s2,a) with goal state (g),
 we can use the update
-D(s1,sk,a) <= 1 + gamma * min a (D(s2, sk, a))
-This is a contraction in the TODO norm, just like Q-learning. See section TODO for a proof of the contraction
+D(s1,g,a) <= 1 + gamma * min b (D(s2, g, b))
+This is a contraction in the sup-norm, just like Q-learning. See section TODO for a proof of the contraction
 for the final version of this function (I modify it in the "dead end toy environment" section)
 Then, the goal pursuer can simply pick the action a that minimizes the predicted distance to the goal!
 In practice I suspect things will be a little more complicated than this - if the action with minimum distance

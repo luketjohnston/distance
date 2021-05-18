@@ -22,7 +22,7 @@ import agent
 from test import actionAccuracy, printAccuracy
 
 LOAD_SAVE = True
-PROFILE = True
+PROFILE = False
 CPU_CORES = 6
 
 TERM_FLAG = 'terminate'
@@ -42,27 +42,24 @@ BUFFER_SAMPLE_PROCESSES = 6
 
 
 OPTIMIZER = 'SGD' # 'Adam' or 'RMSprop' or 'SGD'
-OPTIMIZER = 'RMSprop' # 'Adam' or 'RMSprop' or 'SGD'
-OPTIMIZER = 'Adam' # 'Adam' or 'RMSprop' or 'SGD'
+#OPTIMIZER = 'RMSprop' # 'Adam' or 'RMSprop' or 'SGD'
+#OPTIMIZER = 'Adam' # 'Adam' or 'RMSprop' or 'SGD'
 OPTIMIZER_EPSILON = 1e-7 #1e-7 is default for adam
 GRAD_CLIP = 0.01
-REGULARIZATION_WEIGHT = 0.0
 
 BUFFER_SIZE = 2**18 # 2**17 is max we can hold in memory it seems
-BUFFER_SIZE = 2**10
+#BUFFER_SIZE = 2**10
 #BUFFER_SIZE = 128
 
 
 CLIP_REWARDS = True
 #LR = 0.000001 #use this for fully connected
 #LR = 0.001 # this is tf default
-LR = 0.000003 # this is the best so far for toyenv, diverges at an order of magnitude higher.
-LR = 0.00003 # diverges here! UNLESS we use experience replay and then it seems to work ok
-LR = 0.0001
 LR = 0.00001
 LR = 0.01 
-LR = 0.0001  # works for 20x20 toyenv
-LR = 0.00001  # works for 20x20 toyenv
+LR = 0.001
+#LR = 0.0001  # works for 20x20 toyenv
+#LR = 0.00001  # works for 20x20 toyenv
 #LR = 0.001  
 #LR = 0.000001  # too low for 20x20 toyenv, log
 
@@ -166,67 +163,65 @@ if __name__ == '__main__':
     
 
     saved_data_shape = tuple(agent.INPUT_SHAPE[:-1])
-    data_type_and_shape = ((np.float32, saved_data_shape), (np.int32, ()), (np.float32, ()))
-    replay_buffer = PrioritizedReplayBuffer(BUFFER_SIZE, 0.001, data_type_and_shape)
 
+    # TODO: should I convert all these to numpy arrays? probably...
+    states_l  = statelist[:-1]
+    actions_l = [0 for _ in statelist[:-1]]
+    rewards_l = [0 for _ in statelist[:-1]]
+    dones_l   = [0 for _ in statelist[:-1]]
 
-    # TODO: add support for TOY_ENV and USE_BUFFER==False
-    def getDataProcess(dataQueue, indicesQueue):
-      for i in range(PARAM_UPDATES_PER_CYCLE // BUFFER_SAMPLE_PROCESSES):
-        batch = []
-        indices = indicesQueue.get()
-        for (i1,i2) in indices:
-          rollout, done_ab, index, prob = replay_buffer.getRolloutAt(i1, agent.INPUT_SHAPE[-1]+1)
-          state_roll, action_roll, reward_roll = rollout
-          # get transition and action from rollouts
-          a = state_roll[:-1,...]
-          b = state_roll[1:,...]
-          action_a = action_roll[-2,...]
-          # TODO should I use the k_probs?
-          (k, _, _),_,_,_ = replay_buffer.getRolloutAt(i2, agent.INPUT_SHAPE[-1])
-          # move time dimension to last axis
-          # TODO is this slow? should I refactor agent.py so time axis is before channels axes?
-          (states_a, states_b, states_k) = (np.moveaxis(a,0,-1) for a in (a, b, k))
-          if agent.TOY_ENV:
-            states_a, states_b, states_k = [s[...,-1:] for s in [states_a, states_b, states_k]] # remove time dimension
-          prob = prob.astype(agent.NP_FLOAT_TYPE)
-          action_a = action_a.astype(agent.NP_INT_TYPE)
-          batch.append([states_a, states_b, states_k, action_a, done_ab, index, prob])
-        a,b,k,act,done,ind,prob = [np.stack(x) for x in zip(*batch)]
-        ind = ind.astype(agent.NP_INT_TYPE)
-        dataQueue.put((a,b,k,act,done,ind,prob))
+    if USE_BUFFER:
+      data_type_and_shape = ((np.float32, saved_data_shape), (np.int32, ()), (np.float32, ()))
+      replay_buffer = PrioritizedReplayBuffer(BUFFER_SIZE, 0.001, data_type_and_shape)
 
-    def clearQueue(q):
-      while True:
-        try:
-          q.get_nowait()
-        except queue.Empty:
-          return
+      # TODO: add support for TOY_ENV and USE_BUFFER==False
+      def getDataProcess(dataQueue, indicesQueue):
+        for i in range(PARAM_UPDATES_PER_CYCLE // BUFFER_SAMPLE_PROCESSES):
+          batch = []
+          indices = indicesQueue.get()
+          for (i1,i2) in indices:
+            rollout, done_ab, index, prob = replay_buffer.getRolloutAt(i1, agent.INPUT_SHAPE[-1]+1)
+            state_roll, action_roll, reward_roll = rollout
+            # get transition and action from rollouts
+            a = state_roll[:-1,...]
+            b = state_roll[1:,...]
+            action_a = action_roll[-2,...]
+            # TODO should I use the k_probs?
+            (k, _, _),_,_,_ = replay_buffer.getRolloutAt(i2, agent.INPUT_SHAPE[-1])
+            # move time dimension to last axis
+            # TODO is this slow? should I refactor agent.py so time axis is before channels axes?
+            (states_a, states_b, states_k) = (np.moveaxis(a,0,-1) for a in (a, b, k))
+            if agent.TOY_ENV:
+              states_a, states_b, states_k = [s[...,-1:] for s in [states_a, states_b, states_k]] # remove time dimension
+            prob = prob.astype(agent.NP_FLOAT_TYPE)
+            action_a = action_a.astype(agent.NP_INT_TYPE)
+            batch.append([states_a, states_b, states_k, action_a, done_ab, index, prob])
+          a,b,k,act,done,ind,prob = [np.stack(x) for x in zip(*batch)]
+          ind = ind.astype(agent.NP_INT_TYPE)
+          dataQueue.put((a,b,k,act,done,ind,prob))
 
-    dataQueue = mp.Queue(maxsize = BUFFER_SAMPLE_PROCESSES * 4) # no particular reason for this size. Want to be able to buffer a few new datapoints if possible
-    # needs to be big enough so it never blocks 
-    indicesQueue = mp.Queue(maxsize = PARAM_UPDATES_PER_CYCLE)
-
-
-    def putIndexBatchInQueue():
-      batch = []
-      for i in range(BATCH_SIZE):
-        i1 = replay_buffer.sampleRolloutIndex(agent.INPUT_SHAPE[-1] + 1)
-        i2 = replay_buffer.sampleRolloutIndex(agent.INPUT_SHAPE[-1])
-        batch.append((i1,i2))
-      try:
-        indicesQueue.put_nowait(batch)
-      except queue.Full:
-        pass
-
-    if agent.TOY_ENV and not USE_BUFFER:
-      def datasetGenerator():
+      def clearQueue(q):
         while True:
-          a, b, k, action, done_ab = env.getRandomTransitions(BATCH_SIZE)
-          index = [0] * BATCH_SIZE; prob = [1.] * BATCH_SIZE # indices and probs not important when not using buffer
-          yield (a, b, k, action, done_ab, index, prob)
-      dataiter = iter(datasetGenerator())
-    else:
+          try:
+            q.get_nowait()
+          except queue.Empty:
+            return
+
+      dataQueue = mp.Queue(maxsize = BUFFER_SAMPLE_PROCESSES * 4) # no particular reason for this size. Want to be able to buffer a few new datapoints if possible
+      # needs to be big enough so it never blocks 
+      indicesQueue = mp.Queue(maxsize = PARAM_UPDATES_PER_CYCLE)
+
+
+      def putIndexBatchInQueue():
+        batch = []
+        for i in range(BATCH_SIZE):
+          i1 = replay_buffer.sampleRolloutIndex(agent.INPUT_SHAPE[-1] + 1)
+          i2 = replay_buffer.sampleRolloutIndex(agent.INPUT_SHAPE[-1])
+          batch.append((i1,i2))
+        try:
+          indicesQueue.put_nowait(batch)
+        except queue.Full:
+          pass
       def datasetGenerator():
         while True:
           data  =  dataQueue.get()
@@ -247,13 +242,19 @@ if __name__ == '__main__':
       dataset = dataset.prefetch(buffer_size=tf.data.AUTOTUNE) 
       dataiter = iter(dataset)
 
-    # TODO: should I convert all these to numpy arrays? probably...
-    states_l  = statelist[:-1]
-    actions_l = [0 for _ in statelist[:-1]]
-    rewards_l = [0 for _ in statelist[:-1]]
-    dones_l   = [0 for _ in statelist[:-1]]
+      replay_buffer.addDatapoints(zip(zip(states_l, actions_l, rewards_l), dones_l))
 
-    replay_buffer.addDatapoints(zip(zip(states_l, actions_l, rewards_l), dones_l))
+    elif agent.TOY_ENV and not USE_BUFFER:
+      def datasetGenerator():
+        while True:
+          a, b, k, action, done_ab = env.getRandomTransitions(BATCH_SIZE)
+          index = [0] * BATCH_SIZE; prob = [1.] * BATCH_SIZE # indices and probs not important when not using buffer
+          yield (a, b, k, action, done_ab, index, prob)
+      dataiter = iter(datasetGenerator())
+    else:
+      raise Exception('cant have USE_BUFFER==false if not using environment from toyenv.py')
+
+
 
     while True: 
 
@@ -346,13 +347,14 @@ if __name__ == '__main__':
 
         # have to start processes here (can't have them running when replay_buffer is being updated
         # with new datapoints)
-        sample_procs = []
-        for p in range(BUFFER_SAMPLE_PROCESSES):
-          sample_procs.append(mp.Process(target = getDataProcess, args=(dataQueue, indicesQueue)))
-          sample_procs[-1].start()
+        if USE_BUFFER:
+          sample_procs = []
+          for p in range(BUFFER_SAMPLE_PROCESSES):
+            sample_procs.append(mp.Process(target = getDataProcess, args=(dataQueue, indicesQueue)))
+            sample_procs[-1].start()
 
-        for p in sample_procs:
-          putIndexBatchInQueue()
+          for p in sample_procs:
+            putIndexBatchInQueue()
         
         start = timeit.default_timer()
 
@@ -365,14 +367,14 @@ if __name__ == '__main__':
           #if b == 30:
           #  tf.profiler.experimental.stop()
 
-          with tf.GradientTape(watch_accessed_variables=True) as tape:
-            loss, td_error, mean_dist = actor.loss(states_a, states_b, states_k, actions_a, probs, dones_ab)
-            loss_TD = loss[0]; loss_ab = loss[1] 
-            regloss = loss[2] * REGULARIZATION_WEIGHT
-            
+          #with tf.GradientTape(watch_accessed_variables=True) as tape:
+          loss, td_error, mean_dist, grads = actor.loss(states_a, states_b, states_k, actions_a, probs, dones_ab)
 
-            loss_str = ''.join('{:6f}, '.format(lossv) for lossv in loss)
-          grad = tape.gradient((loss_TD, loss_ab, regloss), actor.vars)
+          (loss_TD, loss_ab, regloss) = loss
+
+          loss_str = ''.join('{:6f}, '.format(lossv) for lossv in loss)
+          #grad = tape.gradient((loss_TD, loss_ab, regloss), actor.vars)
+          #grad = tape.gradient(loss_ab, actor.vars)
           #grad = [tf.clip_by_norm(g, GRAD_CLIP) for g in grad]
 
           # TODO: get rid of this is_nan check, slows down everything and it's stupid anyway.
@@ -380,20 +382,21 @@ if __name__ == '__main__':
 
           #for v in actor.vars:
           #  tf.debugging.check_numerics(v, 'nan before update')
-          #foundNan = False
-          #for g in grad:
-          #  if tf.math.reduce_any(tf.math.is_nan(g)):
-          #    foundNan = True
-          #    nanCount += 1
-          #    break
-          #    #print(g)
-          #    #tf.print(g, summarize=-1) # -1 indicates print everything
-          #    #code.interact(local=locals())
-          #  #tf.debugging.check_numerics(g, 'nan in gradients')
-          #if foundNan:
-          #  print('nanCount: ' + str(nanCount))
-          #if not foundNan:
-          agentOpt.apply_gradients(zip(grad, actor.vars))
+          foundNan = False
+          for i,g in enumerate(grads):
+            if tf.math.reduce_any(tf.math.is_nan(g)):
+            #if True:
+              foundNan = True
+              print('found nan:')
+              print(actor.vars[i].name)
+              tf.print(g, summarize=-1) # -1 indicates print everything
+              code.interact(local=locals())
+            #tf.debugging.check_numerics(g, 'nan in gradients')
+          if foundNan:
+            nanCount += 1
+            print('nanCount: ' + str(nanCount))
+          if not foundNan:
+            agentOpt.apply_gradients(zip(grads, actor.vars))
 
 
           #for v in actor.vars:
@@ -428,14 +431,16 @@ if __name__ == '__main__':
 
           if b == PARAM_UPDATES_PER_CYCLE - 1: break
 
-        for p in sample_procs:
-          p.join()
-        clearQueue(indicesQueue)
+
+        if USE_BUFFER:
+          for p in sample_procs:
+            p.join()
+          clearQueue(indicesQueue)
 
       except KeyboardInterrupt:
-        print("GOT KEYBOARD INT")
-        for p in sample_procs:
-          p.terminate()
+        if USE_BUFFER:
+          for p in sample_procs:
+            p.terminate()
         raise KeyboardInterrupt
 
       end = timeit.default_timer()

@@ -16,12 +16,15 @@ from toyenv import ToyEnv, LoopEnv, DeadEnd
 physical_devices = tf.config.experimental.list_physical_devices('GPU')
 tf.config.experimental.set_memory_growth(physical_devices[0], True)
 
-USE_LOG = True
+USE_LOG = False
 
 TOY_ENV = True
 TOYENV_SIZE = 10
 USE_COORDS = True
-DEADEND = False
+DEADEND = True
+
+AB_WEIGHT = 1.0
+REGULARIZATION_WEIGHT = 0.0
 
 ENVIRONMENT = 'MontezumaRevengeDeterministic-v4'
 #ENVIRONMENT = 'PongDeterministic-v4'
@@ -97,7 +100,6 @@ DISCOUNT = 0.999
 #DISCOUNT = 0.99
 DISCOUNT = 0.9
 DISCOUNT = 0.999
-ENTROPY_WEIGHT = 0.001
 
 #ADD_ENTROPY = True
 
@@ -202,7 +204,9 @@ class Agent(tf.Module):
     #tf.print(Dak)
     Dak_a = tf.gather(Dak, action, batch_dims=1)
     Dab = self.distance(enca, encb)
+    self.Dab = Dab
     Dab_a = tf.gather(Dab, action, batch_dims=1)
+    self.Dab_a = Dab_a
     Dbk_target = self.distance(encb, enck)
 
     #tf.debugging.check_numerics(Dak, 'Dak nan')
@@ -231,7 +235,6 @@ class Agent(tf.Module):
     # apply importance sampling to the target
     weights = tf.pow(probs, -BETA)
     weights /= tf.reduce_max(weights)
-    #tf.debugging.check_numerics(weights, 'weights nan')
 
     TD_error = tf.abs(Dak_a - target) 
     TD_error = tf.pow(TD_error, ALPHA)
@@ -249,7 +252,6 @@ class Agent(tf.Module):
     regloss = 0
     for x in self.vars:
       regloss += tf.reduce_mean(tf.pow(x, 2))
-      #regloss += tf.reduce_sum(tf.abs(x))
 
     #tf.print('a,b,k, dak, dab, dbk_target')
     #tf.print(states_a)
@@ -266,8 +268,54 @@ class Agent(tf.Module):
       av_distance  = tf.reduce_mean(tf.math.exp(Dak))
       max_distance = tf.reduce_max(tf.math.exp(Dak))
 
-    return (loss_TD, loss_ab, regloss), TD_error, av_distance
     
+    loss = AB_WEIGHT * loss_ab + loss_TD + REGULARIZATION_WEIGHT * regloss
+    grads = tf.gradients(loss, self.vars)
+
+    return (loss_TD, loss_ab, regloss), TD_error, av_distance, grads
+
+  #@tf.function(input_signature=(IMSPEC, IMSPEC, IMSPEC, INTSPEC, FLOATSPEC, BOOLSPEC))
+  #def gradsDab(self, states_a, states_b, states_k, action, probs, dones_ab):
+  #  enca, encb, enck = [self.encode(x) for x in [states_a, states_b, states_k]]
+  #  
+  #  Dak = self.distance(enca, enck)
+  #  Dak_a = tf.gather(Dak, action, batch_dims=1)
+  #  Dab = self.distance(enca, encb)
+  #  self.Dab = Dab
+  #  Dab_a = tf.gather(Dab, action, batch_dims=1)
+  #  self.Dab_a = Dab_a
+  #  Dbk_target = self.distance(encb, enck)
+
+  #  # check if k == b. If so, target Dbk needs to be 0
+  #  target = tf.reduce_min(Dbk_target, axis=-1)
+  #  mask = tf.squeeze(tf.reduce_max(tf.cast(tf.not_equal(encb, enck), FLOAT_TYPE), axis=1))
+  #  
+  #  if not USE_LOG:
+  #    target = tf.stop_gradient(1 + DISCOUNT * target * mask)
+  #    Dab_target = 1
+  #    max_target = 1 / (1 - DISCOUNT)
+  #  else:
+  #    target = tf.stop_gradient(tf.math.log(1 + mask * tf.math.exp(target)))
+  #    Dab_target = 0
+  #    max_target = 10
+
+  #  target = target - tf.cast(dones_ab, FLOAT_TYPE) * (target - max_target)
+
+  #  # trying settings weights to 1 to see if it's the nan culprit
+  #  weights = 1.0
+
+  #  loss_ab = tf.reduce_mean(tf.pow(weights * (Dab_a - Dab_target), 2))
+
+  #  regloss = 0
+  #  for x in self.vars:
+  #    regloss += tf.reduce_mean(tf.pow(x, 2))
+  #    #regloss += tf.reduce_sum(tf.abs(x))
+
+  #  tf.print(tf.gradients(loss_ab, Dab))
+  #  tf.print(tf.gradients(loss_ab, self.vars[-2]))
+  #  tf.print(tf.gradients(regloss, self.vars[-2]))
+
+
     
 if __name__ == '__main__':
 

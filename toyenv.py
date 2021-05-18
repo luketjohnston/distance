@@ -145,6 +145,8 @@ class DeadEnd(ToyEnv):
     if self.coords[0] == self.n - 1:
       done = True
     return self.getObs(), 0.0, done, {}
+  def getRandomTransitions(self, batch_size):
+    raise Exception('not implemented')
 
 
 
