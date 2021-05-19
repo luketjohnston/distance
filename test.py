@@ -25,25 +25,32 @@ def printAccuracy(env, batch_size, actor):
   print('accurracy: ' + str(ave_err))
   return ave_err
 
-def actionAccuracy(env, batch_size, actor, verbose=False):
-  coords1 = np.random.randint(0,env.n,size=(batch_size, 2))
-  coords2 = np.random.randint(0,env.n,size=(batch_size, 2))
+def printAccs(env, batch_size, actor, maxDist=None, logDist=False):
+  coords1 = env.getRandomCoords(batch_size)
+  coords2 = env.getRandomCoords(batch_size)
   obs1,obs2 = env.coordsToObs(coords1), env.coordsToObs(coords2)
   obs1,obs2 = np.expand_dims(obs1, -1), np.expand_dims(obs2, -1)
   enc1,enc2 = actor.encode(obs1), actor.encode(obs2)
   dists = actor.distance(enc1, enc2)
+  mindists = np.min(dists, axis=-1)
+  
+  if logDist:
+    dists = np.exp(dists)
+  correct_dists = np.zeros(shape=(batch_size,))
+  for i in range(batch_size):
+    correct_dists[i] = env.correctDistance(coords1[i], coords2[i], maxDist)
+
   actions = tf.math.argmin(dists, axis=-1).numpy()
   correct = 0
   for i in range(batch_size):
     action = actions[i]
     correct += int(action in env.correctActions(coords1[i], coords2[i]))
-    if verbose and not action in env.correctActions(coords1[i], coords2[i]):
-      print('Incorrect action!')
-      input('%s, %s: %s' % (str(coords1[i]), str(coords2[i]), str(dists[i])))
 
   acc = correct / batch_size
+  diff = np.mean(np.abs(mindists - correct_dists))
   print('action acc: ' + str(acc))
-  return acc
+  print('av dist diff: ' + str(diff))
+  return acc, diff
 
 def printRandomDist(actor):
   coords = np.random.randint(0,agent.TOYENV_SIZE,size=(1, 2, 2, 1))

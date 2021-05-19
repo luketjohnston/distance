@@ -19,9 +19,10 @@ tf.config.experimental.set_memory_growth(physical_devices[0], True)
 USE_LOG = False
 
 TOY_ENV = True
-TOYENV_SIZE = 10
+TOYENV_SIZE = 20
 USE_COORDS = True
-DEADEND = True
+DEADEND = False
+
 
 AB_WEIGHT = 1.0
 REGULARIZATION_WEIGHT = 0.0
@@ -29,6 +30,18 @@ REGULARIZATION_WEIGHT = 0.0
 ENVIRONMENT = 'MontezumaRevengeDeterministic-v4'
 #ENVIRONMENT = 'PongDeterministic-v4'
 #ENVIRONMENT = 'CartPole-v1'
+
+#OPTIMIZER = 'SGD' # 'Adam' or 'RMSprop' or 'SGD'
+#OPTIMIZER = 'RMSprop' # 'Adam' or 'RMSprop' or 'SGD'
+OPTIMIZER = 'Adam' # 'Adam' or 'RMSprop' or 'SGD'
+OPTIMIZER_EPSILON = 1e-7 #1e-7 is default for adam
+GRAD_CLIP = 0.01
+
+#LR = 0.01 
+#LR = 0.001 # this is tf default
+#LR = 0.0001  # this seems to be the best for 20x20 toyenv, usecoords=True, uselog=False
+LR = 0.00001  # works for 20x20 toyenv
+#LR = 0.000001  # too low for 20x20 toyenv, log
 
 def makeEnv():
   if TOY_ENV and not DEADEND:
@@ -95,11 +108,12 @@ LOGITSPEC = tf.TensorSpec([None, ACTIONS], dtype=FLOAT_TYPE)
 ENCSPEC = tf.TensorSpec([None, ENCODING_SIZE], dtype=FLOAT_TYPE)
 
 
+DISCOUNT = 0.999
 
-DISCOUNT = 0.999
-#DISCOUNT = 0.99
-DISCOUNT = 0.9
-DISCOUNT = 0.999
+if USE_LOG:
+  MAX_DIST = np.exp(10.0, dtype=np.float32)
+else:
+  MAX_DIST = 1 / (1 - DISCOUNT)
 
 #ADD_ENTROPY = True
 
@@ -112,9 +126,6 @@ def getConvOutputSizeValid(w,h,filtersize, channels, stride):
   w = (w - filtersize) // stride + 1
   h = (h - filtersize) // stride + 1
   return w,h,channels
-
-  
-  
 
 
 class Agent(tf.Module):
@@ -141,6 +152,18 @@ class Agent(tf.Module):
     self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(ACTIONS,),dtype=FLOAT_TYPE), name='Distance_bo', dtype=FLOAT_TYPE))
 
 
+    opt_params = {'learning_rate': LR, 'clipvalue': GRAD_CLIP}
+    if OPTIMIZER == 'Adam':
+      opt = tf.keras.optimizers.Adam
+      opt_params['epsilon'] = OPTIMIZER_EPSILON
+    elif OPTIMIZER == 'RMSprop':
+      opt = tf.keras.optimizers.RMSprop
+      opt_params['epsilon'] = OPTIMIZER_EPSILON
+    elif OPTIMIZER == 'SGD':
+      opt = tf.keras.optimizers.SGD
+    self.opt = opt(**opt_params)
+
+
   ''' encodes state'''
   @tf.function(input_signature=(IMSPEC,))
   def encode(self, states):
@@ -154,20 +177,13 @@ class Agent(tf.Module):
       x = tf.nn.leaky_relu(x)
     x = tf.keras.layers.Flatten()(x)
     vi = len(CHANNELS)
-    #vi = 0
     w, b = mvars[vi:vi+2]
-    #tf.print('w', w)
-    #tf.print('b', b)
-    #tf.debugging.check_numerics(w, 'encoding w nan')
-    #tf.debugging.check_numerics(b, 'encoding b nan')
     encoding = tf.nn.leaky_relu(tf.einsum('ba,ah->bh', x,w) + b)
-    #tf.print('encoding1', encoding)
-    #tf.debugging.check_numerics(encoding, 'encoding nan')
     w,b = mvars[vi+2:vi+4]
     encoding = tf.nn.leaky_relu(tf.einsum('ba,ao->bo',encoding,w)  + b)
     return encoding
 
-  ''' Takes two state encodings as input, and returns the distance between them for each action taken a'''
+  ''' Takes two state encodings as input, and returns the distance between them for each action option a'''
   @tf.function(input_signature=(ENCSPEC,ENCSPEC))
   def distance(self, enc1, enc2):
     # let's just start with something simple...
@@ -177,10 +193,7 @@ class Agent(tf.Module):
     w,b = mvars[:2]
     distance= tf.nn.leaky_relu(tf.einsum('ba,ah->bh', x,w) + b)
     w,b = mvars[2:4]
-    # TODO add bias back on
-    distance = tf.einsum('ba,ao->bo',distance,w)
-    # TODO should this be RELU instead?
-    #r = tf.stack([tf.reduce_sum(tf.abs(enc1 - enc2), -1) for _ in range(ACTIONS)], -1)
+    distance = tf.einsum('ba,ao->bo',distance,w) + b
     return distance
 
   @tf.function(input_signature=(IMSPEC, IMSPEC))
@@ -193,26 +206,15 @@ class Agent(tf.Module):
   @tf.function(input_signature=(IMSPEC, IMSPEC, IMSPEC, INTSPEC, FLOATSPEC, BOOLSPEC))
   def loss(self, states_a, states_b, states_k, action, probs, dones_ab):
 
-    #tf.print('sa, sk, ea, ek, dak')
-    #tf.print(states_a)
-    #tf.print(states_k)
     enca, encb, enck = [self.encode(x) for x in [states_a, states_b, states_k]]
-    #tf.print(enca)
-    #tf.print(enck)
     
     Dak = self.distance(enca, enck)
-    #tf.print(Dak)
     Dak_a = tf.gather(Dak, action, batch_dims=1)
     Dab = self.distance(enca, encb)
     self.Dab = Dab
     Dab_a = tf.gather(Dab, action, batch_dims=1)
     self.Dab_a = Dab_a
     Dbk_target = self.distance(encb, enck)
-
-    #tf.debugging.check_numerics(Dak, 'Dak nan')
-    #tf.debugging.check_numerics(Dak_a, 'Dak_a nan')
-    #tf.debugging.check_numerics(Dab, 'Dab nan')
-    #tf.debugging.check_numerics(Dab_a, 'Dab_a nan')
 
     # check if k == b. If so, target Dbk needs to be 0
     target = tf.reduce_min(Dbk_target, axis=-1)
@@ -225,12 +227,9 @@ class Agent(tf.Module):
     else:
       target = tf.stop_gradient(tf.math.log(1 + mask * tf.math.exp(target)))
       Dab_target = 0
-      max_target = 10
+      max_target = tf.math.log(MAX_DIST)
 
     target = target - tf.cast(dones_ab, FLOAT_TYPE) * (target - max_target)
-
-    #tf.debugging.check_numerics(target, 'target nan')
-    #tf.debugging.check_numerics(mask, 'mask nan')
 
     # apply importance sampling to the target
     weights = tf.pow(probs, -BETA)
@@ -244,22 +243,10 @@ class Agent(tf.Module):
     # TODO having this update in here is going to mess things up when 
     # transitions are stochastic 
     loss_ab = tf.reduce_mean(tf.pow(weights * (Dab_a - Dab_target), 2))
-    #loss += tf.reduce_mean(tf.abs(Dab_a - 1))
-    #tf.debugging.check_numerics(loss_TD, 'loss_TD nan')
-    #tf.debugging.check_numerics(loss_ab, 'loss_ab nan')
-    
 
     regloss = 0
     for x in self.vars:
       regloss += tf.reduce_mean(tf.pow(x, 2))
-
-    #tf.print('a,b,k, dak, dab, dbk_target')
-    #tf.print(states_a)
-    #tf.print(states_b)
-    #tf.print(states_k)
-    #tf.print(Dak)
-    #tf.print(Dab)
-    #tf.print(Dbk_target)
 
     if not USE_LOG:
       av_distance = tf.reduce_mean(Dak)
@@ -271,58 +258,12 @@ class Agent(tf.Module):
     
     loss = AB_WEIGHT * loss_ab + loss_TD + REGULARIZATION_WEIGHT * regloss
     grads = tf.gradients(loss, self.vars)
+    self.opt.apply_gradients(zip(grads, self.vars))
 
-    return (loss_TD, loss_ab, regloss), TD_error, av_distance, grads
-
-  #@tf.function(input_signature=(IMSPEC, IMSPEC, IMSPEC, INTSPEC, FLOATSPEC, BOOLSPEC))
-  #def gradsDab(self, states_a, states_b, states_k, action, probs, dones_ab):
-  #  enca, encb, enck = [self.encode(x) for x in [states_a, states_b, states_k]]
-  #  
-  #  Dak = self.distance(enca, enck)
-  #  Dak_a = tf.gather(Dak, action, batch_dims=1)
-  #  Dab = self.distance(enca, encb)
-  #  self.Dab = Dab
-  #  Dab_a = tf.gather(Dab, action, batch_dims=1)
-  #  self.Dab_a = Dab_a
-  #  Dbk_target = self.distance(encb, enck)
-
-  #  # check if k == b. If so, target Dbk needs to be 0
-  #  target = tf.reduce_min(Dbk_target, axis=-1)
-  #  mask = tf.squeeze(tf.reduce_max(tf.cast(tf.not_equal(encb, enck), FLOAT_TYPE), axis=1))
-  #  
-  #  if not USE_LOG:
-  #    target = tf.stop_gradient(1 + DISCOUNT * target * mask)
-  #    Dab_target = 1
-  #    max_target = 1 / (1 - DISCOUNT)
-  #  else:
-  #    target = tf.stop_gradient(tf.math.log(1 + mask * tf.math.exp(target)))
-  #    Dab_target = 0
-  #    max_target = 10
-
-  #  target = target - tf.cast(dones_ab, FLOAT_TYPE) * (target - max_target)
-
-  #  # trying settings weights to 1 to see if it's the nan culprit
-  #  weights = 1.0
-
-  #  loss_ab = tf.reduce_mean(tf.pow(weights * (Dab_a - Dab_target), 2))
-
-  #  regloss = 0
-  #  for x in self.vars:
-  #    regloss += tf.reduce_mean(tf.pow(x, 2))
-  #    #regloss += tf.reduce_sum(tf.abs(x))
-
-  #  tf.print(tf.gradients(loss_ab, Dab))
-  #  tf.print(tf.gradients(loss_ab, self.vars[-2]))
-  #  tf.print(tf.gradients(regloss, self.vars[-2]))
-
+    return (loss_TD, loss_ab, regloss), TD_error, av_distance
 
     
 if __name__ == '__main__':
-
-  #print('running loss')
-  #encoder.loss_from_beginning(tf.zeros((16,84,110,1)))
-
-  
 
   agent = Agent();
 

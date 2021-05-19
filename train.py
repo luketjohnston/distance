@@ -19,7 +19,7 @@ import matplotlib.cm as cm
 import numpy as np
 
 import agent
-from test import actionAccuracy, printAccuracy
+from test import printAccs
 
 LOAD_SAVE = True
 PROFILE = False
@@ -36,33 +36,16 @@ with alpha = 3 beta = 0, can use higher learning rate, and doesn't diverge (will
 #ALPHA = 2
 #ALPHA = 0
 
-USE_BUFFER = True
+USE_BUFFER = False
 TEST_LIMITED_STATES = False
 BUFFER_SAMPLE_PROCESSES = 6
 
 
-OPTIMIZER = 'SGD' # 'Adam' or 'RMSprop' or 'SGD'
-#OPTIMIZER = 'RMSprop' # 'Adam' or 'RMSprop' or 'SGD'
-#OPTIMIZER = 'Adam' # 'Adam' or 'RMSprop' or 'SGD'
-OPTIMIZER_EPSILON = 1e-7 #1e-7 is default for adam
-GRAD_CLIP = 0.01
-
 BUFFER_SIZE = 2**18 # 2**17 is max we can hold in memory it seems
-#BUFFER_SIZE = 2**10
+BUFFER_SIZE = 2**10
 #BUFFER_SIZE = 128
 
-
 CLIP_REWARDS = True
-#LR = 0.000001 #use this for fully connected
-#LR = 0.001 # this is tf default
-LR = 0.00001
-LR = 0.01 
-LR = 0.001
-#LR = 0.0001  # works for 20x20 toyenv
-#LR = 0.00001  # works for 20x20 toyenv
-#LR = 0.001  
-#LR = 0.000001  # too low for 20x20 toyenv, log
-
 
 USE_TARGET = False
 SAVE_CYCLES = 1
@@ -74,6 +57,8 @@ STEPS_BETWEEN_TRAINING = 512
 #STEPS_BETWEEN_TRAINING = 64
 PARAM_UPDATES_PER_CYCLE = 100 * BUFFER_SAMPLE_PROCESSES # should be multiple of BUFFER_SAMPLE_PROCESSES
 #PARAM_UPDATES_PER_CYCLE = 50
+SAVE_STATS_EVERY = 50
+
 if TEST_LIMITED_STATES:
   PARAM_UPDATES_PER_CYCLE *= 999999
 #TRANSITION_GOAL_PAIRS_ADDED_PER_TIMESTEP  = 20
@@ -91,6 +76,8 @@ if __name__ == '__main__':
 
 
       accs = [] if not 'accs' in save else save['accs']
+      dist_diffs = [] if not 'dist_diffs' in save else save['dist_diffs']
+      SAVE_STATS_EVERY = SAVE_STATS_EVERY if not 'save_stats_every' in save else save['save_stats_every']
       episode_rewards = [] if not 'episode_rewards' in save else save['episode_rewards']
       max_grads = [] if not 'max_grads' in save else save['max_grads']
       max_weights = [] if not 'max_weights' in save else save['max_weights']
@@ -106,21 +93,6 @@ if __name__ == '__main__':
       tf.config.run_functions_eagerly(True) 
       actor = agent.Agent()
       target_actor = agent.Agent() if USE_TARGET else actor
-    
-    opt_params = {'learning_rate': LR, 'clipvalue': GRAD_CLIP}
-    if OPTIMIZER == 'Adam':
-      opt = tf.keras.optimizers.Adam
-      opt_params['epsilon'] = OPTIMIZER_EPSILON
-    elif OPTIMIZER == 'RMSprop':
-      opt = tf.keras.optimizers.RMSprop
-      opt_params['epsilon'] = OPTIMIZER_EPSILON
-    elif OPTIMIZER == 'SGD':
-      opt = tf.keras.optimizers.SGD
-
-    agentOpt = opt(**opt_params)
-    if 'optimizer_state' in save:
-      agentOpt = opt.from_config(save['opt_config'])
-      agentOpt.set_weights(save['opt_weights'])
 
     def copyWeightsFromTo(actor, target):
       for i,v in enumerate(actor.vars):
@@ -362,59 +334,19 @@ if __name__ == '__main__':
         for b in range(PARAM_UPDATES_PER_CYCLE):
           (states_a, states_b, states_k, actions_a, dones_ab, indices, probs) = next(dataiter)
 
-          #if b == 20:
-          #  tf.profiler.experimental.start('logdir')
-          #if b == 30:
-          #  tf.profiler.experimental.stop()
-
-          #with tf.GradientTape(watch_accessed_variables=True) as tape:
-          loss, td_error, mean_dist, grads = actor.loss(states_a, states_b, states_k, actions_a, probs, dones_ab)
+          loss, td_error, mean_dist = actor.loss(states_a, states_b, states_k, actions_a, probs, dones_ab)
 
           (loss_TD, loss_ab, regloss) = loss
 
           loss_str = ''.join('{:6f}, '.format(lossv) for lossv in loss)
-          #grad = tape.gradient((loss_TD, loss_ab, regloss), actor.vars)
-          #grad = tape.gradient(loss_ab, actor.vars)
-          #grad = [tf.clip_by_norm(g, GRAD_CLIP) for g in grad]
 
-          # TODO: get rid of this is_nan check, slows down everything and it's stupid anyway.
-          # need to figure out why these nans are happening.
-
-          #for v in actor.vars:
-          #  tf.debugging.check_numerics(v, 'nan before update')
-          foundNan = False
-          for i,g in enumerate(grads):
-            if tf.math.reduce_any(tf.math.is_nan(g)):
-            #if True:
-              foundNan = True
-              print('found nan:')
-              print(actor.vars[i].name)
-              tf.print(g, summarize=-1) # -1 indicates print everything
-              code.interact(local=locals())
-            #tf.debugging.check_numerics(g, 'nan in gradients')
-          if foundNan:
-            nanCount += 1
-            print('nanCount: ' + str(nanCount))
-          if not foundNan:
-            agentOpt.apply_gradients(zip(grads, actor.vars))
-
-
-          #for v in actor.vars:
-          #  tf.debugging.check_numerics(v, 'nan after update')
           agent_losses += [loss]
           #printAccuracy(env, 100, actor)
-          if agent.TOY_ENV and not b % 50:
-            acc = actionAccuracy(env,100, actor)
+          if agent.TOY_ENV and not b % SAVE_STATS_EVERY:
+            acc,dist_diff = printAccs(env,100, actor, agent.MAX_DIST, logDist=agent.USE_LOG)
             accs += [acc]
-            #maxgrad = 0
-            #for v in grad:
-            #  maxgrad = max(tf.reduce_max(v), maxgrad)
-            #max_grads.append(maxgrad.numpy())
-            #maxweight = 0
-            #for v in actor.vars:
-            #  maxweight = max(tf.reduce_max(v), maxweight)
-            #max_weights.append(maxweight.numpy())
-          if not b % 50:
+            dist_diffs += [dist_diff]
+          if not b % SAVE_STATS_EVERY:
             print('Mean Dak: ' + str(mean_dist))
             print(loss_str)
 
@@ -457,10 +389,10 @@ if __name__ == '__main__':
         with open(agent.picklepath, "wb") as fp:
           save['agent_losses'] = agent_losses
           save['accs'] = accs
+          save['dist_diffs'] = dist_diffs
           save['max_grads'] = max_grads
           save['max_weights'] = max_weights
-          save['opt_config'] = agentOpt.get_config()
-          save['opt_weights'] = agentOpt.get_weights()
+          save['save_stats_every'] = SAVE_STATS_EVERY
           save['nanCount'] = nanCount
           pickle.dump(save, fp)
 

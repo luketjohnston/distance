@@ -3,16 +3,18 @@
 
 # Goal-directed reinforcement learning
 
-The ultimate goal of this project is to develop a method of reinforcement learning
+The ultimate goal of this project is reinforcement learning
 with goals (where a goalsetter sets a goal, and then the agent tries to achieve
 that goal). The motivation for this is that goal-setting seems to me to be a better approximation
-of how humans think than current methods (which mostly fall into two broad categories - "reflex" 
+of how humans think than the main alternatives, which mostly fall into two broad categories - "reflex" 
 learning, where a function approximator (i.e. neural network) learns how to map states to actions directly, 
 and "tree search" methods, where a learned dynamics model is used to search the decision tree for
-the best actions). TODO cite a few examples and cite some exceptions. While humans certainly
-demonstrate both of these "reflex" and "tree search" capabilities, in my opinion, most higher-level
-thought takes the form of goal-setting and goal-pursuing. There are many other
-examples of goal-oriented reinforcement learning (cite examples), but my approach here is
+the best actions.  For example, Q-learning [3] and Agent57 [5] are examples of "reflex" learning, while
+MuZero [4] is an example of "tree search" learning.
+
+While humans certainly demonstrate both of these "reflex" and "tree search" capabilities, in my opinion, most higher-level
+thought takes the form of goal-setting, goal-evaluating, and goal-pursuing. There are many other
+examples of goal-oriented reinforcement learning ([1], [2]), but my approach here is
 unique enough that I thought it worth exploring.
 
 ## Goal-pursuing
@@ -73,6 +75,8 @@ agent one state left, and when the agent reaches the last state, the environment
 the distance function must learn maximal distances for any (state, goal) pairs where the goal
 happens before the state in this deterministic progression (the maximal distance is limited by the gamma parameter).
 
+![proof of contraction of log-distance update](/images/contraction_proof.pdf)
+
 
 ## Network and implementation details
 The distance function is learned with a neural network approximator. On toy environments, states are represented by
@@ -111,9 +115,19 @@ to easily extend it to use n-step rollouts for distances).
 
 References
 
-[1] Universal Value Function Approximators
+[1] Universal Value Function Approximators, Schaul et al, 2015.
 http://proceedings.mlr.press/v37/schaul15.pdf
 
-[2] Hindsight Experience Replay
+[2] Hindsight Experience Replay, Andrychowicz et al, 2017.
 https://arxiv.org/pdf/1707.01495.pdf
+
+[3] Playing Atari with Deep Reinforcement Learning, Mnih et al, 2013.
+https://www.cs.toronto.edu/~vmnih/docs/dqn.pdf
+
+[4] Mastering Atari, Go, Chess, and Shogi by Planning with a Learned Model, Schrittwieser et al, 2019.
+https://arxiv.org/pdf/1911.08265.pdf
+
+[5] Agent57: Outperforming the Atari Human Benchmark, Badia et al, 2020.
+https://arxiv.org/pdf/2003.13350v1.pdf
+
 

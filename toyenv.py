@@ -30,23 +30,28 @@ class ToyEnv(gym.Env):
       obs[self.coords[0], self.coords[1]] = 1
     return obs
 
+  def getRandomCoords(self, batch_size):
+      return np.random.randint(0,self.n,size=(batch_size, 2,))
+
   def getRandomTransitions(self, batch_size):
-    coords_a, coords_b, coords_k, actions, dones = [],[],[],[],[]
-    for b in range(batch_size):
-      a = np.random.randint(0,self.n,size=(2,))
+
+    coords_a = self.getRandomCoords(batch_size)
+    coords_b = np.zeros(shape=(batch_size,2)) # will overwrite in below loop
+    coords_k = self.getRandomCoords(batch_size)
+    actions = np.zeros(shape=(batch_size,), dtype=np.int32)
+    dones = np.zeros(shape=(batch_size,), dtype=np.bool)
+    
+    oldState = np.copy(self.coords) # just use 'step' method, and then reset state afterward
+
+    for i in range(batch_size):
       action = np.random.randint(0,5)
-      b = a.copy()
-      if action == 1 and a[0] < self.n-1: b[0] += 1
-      if action == 2 and a[0] > 0:      b[0] -= 1
-      if action == 3 and a[1] < self.n-1: b[1] += 1
-      if action == 4 and a[1] > 0:      b[1] -= 1
-      k = np.random.randint(0,self.n,size=(2,))
-      coords_a.append(a)
-      coords_b.append(b)
-      coords_k.append(k)
-      actions.append(action)
-      dones.append(False)
-    coords_a, coords_b, coords_k, actions, dones = [np.stack(c) for c in [coords_a, coords_b, coords_k, actions, dones]]
+      self.coords = np.copy(coords_a[i,:])
+      b,_,_,_ = self.step(action)
+      coords_b[i,:] = b
+      actions[i] = action
+
+    self.coords = oldState
+    actions, dones = [np.stack(c) for c in [actions, dones]]
     obs_a, obs_b, obs_k = [self.coordsToObs(c) for c in [coords_a, coords_b, coords_k]]
     obs_a, obs_b, obs_k = [np.expand_dims(o, -1) for o in [obs_a, obs_b, obs_k]]
     return (obs_a, obs_b, obs_k, actions, dones)
@@ -101,6 +106,11 @@ class ToyEnv(gym.Env):
         actions.append(3)
     return actions
 
+  def correctDistance(self, start, dest, maxDist=None):
+    if np.all(start == dest):
+      return 1
+    else:
+      return np.sum(np.abs(start - dest))
 
 class LoopEnv(ToyEnv):
   def step(self, action):
@@ -135,8 +145,16 @@ class LoopEnv(ToyEnv):
       if start[0] == self.n - 1:
         actions.append(1)
     return actions
-  def getRandomTransitions(self, batch_size):
-    raise Exception('not implemented')
+
+  def correctDistance(self, start, dest, maxDist=None):
+    if start == dest:
+      return 1.0
+    else:
+      xdist = np.abs(dest[0] - start[0])
+      ydist = np.abs(dest[1] - start[1])
+      if start[1] > dest[1]:
+        ydist = min(ydist, np.abs(dest[1] + self.n - start[1]))
+      return xdist + ydist
 
 class DeadEnd(ToyEnv):
   def step(self, action):
@@ -145,8 +163,20 @@ class DeadEnd(ToyEnv):
     if self.coords[0] == self.n - 1:
       done = True
     return self.getObs(), 0.0, done, {}
-  def getRandomTransitions(self, batch_size):
-    raise Exception('not implemented')
+
+  def correctActions(self, start, dest):
+    return range(5) # all actions are the same for DeadEnd env
+
+  def getRandomCoords(self, batch_size):
+      a = np.random.randint(0,self.n,size=(batch_size, 2))
+      a[:,1] = 0
+      return a
+
+  def correctDistance(self, start, dest, maxDist):
+    dist = dest[0] - start[0]
+    if dist <= 0:
+      return maxDist
+    return dist
 
 
 
