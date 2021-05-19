@@ -25,18 +25,22 @@ idea was that if asymmetric distance function could be learned between states, t
 be trained with intrinsic rewards for moving closer to the goal state. However, I soon realized that
 a simpler approach could allow simultaneous learning of the distance function and the 
 'actor' that moves from one state to another: if we represent the distance function
-D(s,g,a) => R
-as a funciton mapping current state (s), goal state (g), and action (a) to a distance, where D(s,g,a) = (distance from s to g after taking action a),
-then this function can be learned in a similar manner to standard Q-learning: for each transition (s1,s2,a) with goal state (g),
+*D(s,g,a) => R*
+as a funciton mapping current state *s*, goal state *g*, and action *a* to a distance, where 
+*D(s,g,a) = (distance from s to g after taking action a)*,
+then this function can be learned in a similar manner to standard Q-learning: for each transition *(s1,a -> s2)* with goal state *g*,
 we can use the update
-D(s1,g,a) <= 1 + gamma * min b (D(s2, g, b))
-This is a contraction in the sup-norm, just like Q-learning. See section TODO for a proof of the contraction
-for the final version of this function (I modify it in the "dead end toy environment" section)
-Then, the goal pursuer can simply pick the action a that minimizes the predicted distance to the goal!
+*D(s1,g,a) <= 1 + gamma * min b (D(s2, g, b))*
+This is a contraction in the sup-norm, just like Q-learning. See section "Dead end toy environment" for a proof of the contraction
+for the final version of this function (I modify it in that section). Of course, this being a contraction of the sup-norm
+doesn't mean that it can be learned easily with a function approximator, but it's encouraging at least.
+
+
+With this distance function learned, the goal pursuer can simply pick the action a that minimizes the predicted distance to the goal!
 In practice I suspect things will be a little more complicated than this - if the action with minimum distance
 is picked every time, then it's possible that "mistakes" in the learned distance function will lead to the goal
 pursuer getting stuck in loops. This problem could potentially be solved by having the goal pursuer randomly sample
-from actions according D(s1,sk,a) (so actions that lead to large distances would be less likely than those that lead to
+from actions according *D(s1,sk,a)* (so actions that lead to large distances would be less likely than those that lead to
 small distances).
 
 ## Basic Grid Environment
@@ -44,14 +48,14 @@ To test the basic feasibility of this idea, I started with a simple 20x20 grid e
 a pair of integer coordinates in 20x20 space, and the 5 actions 
 correspond to moving in the cardinal directions, and waiting in place. Additionally, if the agent
 tries to move off the edge of the grid, it remains in place. A great advantage of such a toy environment
-is that the accurracy of the learned distance function, and the accurracy of the actions it implies for a goal pursuer, 
-can both be easily measured. The below figures show the training curves of action accurracy and distance accurracy 
+is that the error of the learned distance function, and the accurracy of the actions it implies for a goal pursuer, 
+can both be easily measured. The below figure shows the training curves of action accurracy and distance error 
 for the 20x20 environment.
 
 TODO include figures
 
 An obvious next step is to increase the size of the toy environment. In my experiments I have not yet been able
-to reach 100% action accurracy in a toy environment above the size of about 40x40 (see discussion section, TODO)
+to reach 100% action accurracy in a toy environment above the size of about 40x40 (see discussion section).
 
 
 ## Uncommon transition toy environment (UTTE) and Prioritized Experience Replay:
@@ -80,20 +84,20 @@ happens before the state in this deterministic progression (the maximal distance
 
 ## Network and implementation details
 The distance function is learned with a neural network approximator. On toy environments, states are represented by
-tuples of integers (x,y). The neural network learns an "encoding" of the state with two
+tuples of integers *(x,y)*. The neural network learns an "encoding" of the state with two
 fully connected layers, each with output size 128 and activation leaky relu. The 
 distance between two states is taken by concatenating their two encodings, and passing
 this through two fully connected layers, the first with output size 128, and
-the second with output size |A| (the number of actions).  
+the second with output size *|A|* (the number of actions).  
 
 The loss for the log distance function is computed as follows: for each transition
-(s1, s2, a), with goal state (sk), the Dab loss is (D(s1, s2, a))^2, and
-the Dak loss is (D(s1, sk, a) - log (1 + min_b e^D(s2, sk, b)))^2. If 
+*(s1, s2, a)*, with goal state *sk*, the *Dab* loss is *(D(s1, s2, a))^2*, and
+the *Dak* loss is *(D(s1, sk, a) - log (1 + min b e^D(s2, sk, b)))^2*. If 
 s1 -> s2 is a terminal transition, then the target D(s2, sk, b) is set to be
 the maximum possible (I used 10). For prioritized replay, I used an alpha
 value of 1.0 and a beta of 0.0 (since I'm working in deterministic environments
 only so far, importance sampling is not required for prioritized replay). The 
-Dab and Dak losses are combined to get Loss = C * Dab + Dak. I left C = 1.0
+*Dab* and *Dak* losses are combined to get *Loss = C * Dab + Dak*. I left *C = 1.0*
 through all my experiments. I used an experience replay of size 2^18,
 the Adam optimizer with learning rate 0.001, and batch size of 128.  After filling
 up the experience replay buffer, I trained with alternating steps of acting 
@@ -101,14 +105,13 @@ for 512 steps, and then training for 600 batches.
 
 ## Discussion
 The major hurdle I'm facing at the moment is getting the model to learn larger
-environments (it's stuck on the 80x80 basic toy environment). I've tried training
+environments (it's stuck on the 40x40 basic toy environment). I've tried training
 it on the Montezuma's Revenge deterministic Atari environment a few times, 
 upgrading the encoding step to use CNNs instead of fully connected layers, and it
 is able to learn some dead-end states, but distances are mostly meaningless otherwise.
-Most successfull deep reinforcement learning approaches use n-step rollouts for
-the targets instead
-of single-step TD errors, which is a downside of my approach (I don't see how 
-to easily extend it to use n-step rollouts for distances).
+I suspect that a major weakness of my approach is that it can only use the one-step 
+TD-error to learn the distance function - most successfull deep reinforcement learning approaches use 
+n-step rollouts for the targets. 
 
 
 
