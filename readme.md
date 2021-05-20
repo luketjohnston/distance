@@ -55,7 +55,7 @@ can both be easily measured. The below figure shows the training curves of actio
 for the 20x20 environment.
 
 TODO include figures
-![basic grid, vanilla distance training curve][basic_graph.png]
+![basic grid, vanilla distance training curve](basic_graph.png)
 
 An obvious next step is to increase the size of the toy environment. In my experiments I have not yet been able
 to reach 100% action accurracy in a toy environment above the size of about 40x40 (see discussion section).
@@ -71,8 +71,8 @@ above approach, the distance function is not learned on this environment. So, I 
 a common and successful technique to deal with this 'problem' of rarely-seen transitions. Below are the graphs
 for the learned action accurracy with and without prioritized experience replay.
 
-![LoopEnv, no priority][loopenv_nopriority.png]
-![LoopEnv, with prioritized replay][loopenv_priority.png]
+![LoopEnv, no priority](loopenv_nopriority.png)
+![LoopEnv, with prioritized replay](loopenv_priority.png)
 
 
 ## Dead end toy environment (DETE):
@@ -92,7 +92,7 @@ loss function way overemphasized errors at these larger distances, and the learn
 for the closer states diverged a lot. Below is a graph of the mean distance error for reachable (state, goal)
 pairs (that is, it ingores state,goal pairs where the target distance would be the maximum value described above):
 
-![DeadEnd env training, vanilla distance (no log)][deadend_nolog.png]
+![DeadEnd env training, vanilla distance (no log)](deadend_nolog.png)
 
 Clearly, accurracy at these distances is being sacrificed for better accurracy at the maximum distance.
 In order to weight smaller distances higher in the loss function, I modified the distance update to take 
@@ -103,7 +103,7 @@ place in the log-distance space:
 Where now the *D(s1,g,a)* is learning a the log-distance between state *s1* and state *g* after taking action *a*.
 This update is still a contraction in the sup-norm - see the below proof:
 
-![DeadEnd env training, vanilla distance (no log)][deadend_log.png]
+![DeadEnd env training, vanilla distance (no log)](deadend_log.png)
 
 With this modification, the network does a much better job of learning small distances on the DeadEnd environment,
 while still learning large distances for the unachievable states:
