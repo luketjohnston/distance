@@ -52,7 +52,7 @@ correspond to moving in the cardinal directions, and waiting in place. Additiona
 tries to move off the edge of the grid, it remains in place. A great advantage of such a toy environment
 is that the error of the learned distance function, and the accurracy of the actions it implies for a goal pursuer, 
 can both be easily measured. The below figure shows the training curves of action accurracy and distance error 
-for the 20x20 environment.
+for the 20x20 environment. Datapoints are single batches of size 1024 (I found high batch sizes to converge the fastest).
 
 ![basic grid, vanilla distance training curve](images/basic_graph.png)
 
@@ -65,13 +65,18 @@ Clearly, the basic toy environment described above lacks many characteristics of
 One such characteristic is seldom-seen transitions. The UTTE is the same as the basic grid environment, with 
 the exception that transitions off the bottom side of the grid bring the agent back around to the top.
 Since the agent so far learns the distance function entirely through random actions, these transitions happen relatively
-infrequently (the agent's random walk needs to bring it all the way across the grid). Without any modifications to the
-above approach, the distance function is not learned on this environment. So, I added prioritized experience replay,
+infrequently (the agent's random walk needs to bring it all the way across the grid). In my initial experiments,
+I was not able to achieve 100% action accurracy on this environment. So, I added prioritized experience replay,
 a common and successful technique to deal with this 'problem' of rarely-seen transitions. Below are the graphs
 for the learned action accurracy with and without prioritized experience replay.
 
 ![LoopEnv, no priority](images/loopenv_nopriority.png)
 ![LoopEnv, with prioritized replay](images/loopenv_priority.png)
+
+Note that the graph without experience replay may converge anyway if it were to keep training. Initially I was using 
+a batch size of 128, and the LoopEnv wasn't converging without prioritized experience replay, but I found with a higher batch 
+size of 1024 convergence happened much faster - so that's what these graphs show. In any case, prioritized experience replay
+does converge faster than otherwise.
 
 
 ## Dead end toy environment (DETE):
@@ -102,18 +107,22 @@ place in the log-distance space:
 Where now the *D(s1,g,a)* is learning a the log-distance between state *s1* and state *g* after taking action *a*.
 This update is still a contraction in the sup-norm - see the below proof:
 
-![DeadEnd env training, vanilla distance (no log)](images/deadend_log.png)
+<iframe src="http://github.com/luketjohnston/distance/blob/main/images/contraction_proof.pdf" frameborder="0"></iframe>
+![proof of contraction of log-distance update](images/contraction_proof.pdf)
+
 
 With this modification, the network does a much better job of learning small distances on the DeadEnd environment,
 while still learning large distances for the unachievable states:
 
-![proof of contraction of log-distance update](images/contraction_proof.pdf)
+![DeadEnd env training, vanilla distance (no log)](images/deadend_log.png)
+
 
 Note that the mean distance difference does not converge to 0. So, the model is not learning
 the log-distance perfectly. Upon inspection of the actual values learned, the model seems to me
 to be learning relative distances pretty well, especially with respect to each starting state,
 but it systematically underestimates from the true distances. I suspect I will need to fine-tune
 things more if it could every be used on a more complicated environment (see discussion section).
+
 
 
 ## Network and implementation details
@@ -148,8 +157,9 @@ it on the Montezuma's Revenge deterministic Atari environment a few times,
 upgrading the encoding step to use CNNs instead of fully connected layers, and it
 is able to learn some dead-end states, but distances are mostly meaningless otherwise.
 I suspect that a major weakness of my approach is that it can only use the one-step 
-TD-error to learn the distance function - most successfull deep reinforcement learning approaches use 
+TD-error to learn the distance function - most successfull deep reinforcement learning approaches that I'm aware of use 
 n-step rollouts for the targets. 
+
 
 
 
