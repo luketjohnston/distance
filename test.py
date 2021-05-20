@@ -3,7 +3,7 @@ import code
 import numpy as np
 import tensorflow as tf
 import agent
-from toyenv import LoopEnv, ToyEnv
+from toyenv import LoopEnv, ToyEnv, DeadEnd
 
 def printAccuracy(env, batch_size, actor):
   coords = np.random.randint(0,agent.TOYENV_SIZE,size=(batch_size, 2, 2, 1))
@@ -50,6 +50,11 @@ def printAccs(env, batch_size, actor, maxDist=None, logDist=False):
   diff = np.mean(np.abs(mindists - correct_dists))
   print('action acc: ' + str(acc))
   print('av dist diff: ' + str(diff))
+  if isinstance(env, DeadEnd):
+    diff = env.getDistanceAcc(coords1, coords2, mindists, maxDist)
+    print('dist diff for non-maximal dists: ' + str(diff))
+
+
   return acc, diff
 
 def printRandomDist(actor):

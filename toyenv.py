@@ -46,9 +46,10 @@ class ToyEnv(gym.Env):
     for i in range(batch_size):
       action = np.random.randint(0,5)
       self.coords = np.copy(coords_a[i,:])
-      b,_,_,_ = self.step(action)
+      b,_,done,_ = self.step(action)
       coords_b[i,:] = b
       actions[i] = action
+      dones[i] = done
 
     self.coords = oldState
     actions, dones = [np.stack(c) for c in [actions, dones]]
@@ -108,7 +109,7 @@ class ToyEnv(gym.Env):
 
   def correctDistance(self, start, dest, maxDist=None):
     if np.all(start == dest):
-      return 1
+      return 1.0
     else:
       return np.sum(np.abs(start - dest))
 
@@ -147,7 +148,7 @@ class LoopEnv(ToyEnv):
     return actions
 
   def correctDistance(self, start, dest, maxDist=None):
-    if start == dest:
+    if np.all(start == dest):
       return 1.0
     else:
       xdist = np.abs(dest[0] - start[0])
@@ -158,10 +159,11 @@ class LoopEnv(ToyEnv):
 
 class DeadEnd(ToyEnv):
   def step(self, action):
-    self.coords[0] += 1
     done = False
     if self.coords[0] == self.n - 1:
       done = True
+    else:
+      self.coords[0] += 1
     return self.getObs(), 0.0, done, {}
 
   def correctActions(self, start, dest):
@@ -171,6 +173,18 @@ class DeadEnd(ToyEnv):
       a = np.random.randint(0,self.n,size=(batch_size, 2))
       a[:,1] = 0
       return a
+
+  def getDistanceAcc(self, coords1, coords2, dists, maxDist):
+      est_dists = []
+      correct_dists = []
+      for i in range(coords1.shape[0]):
+        cD = self.correctDistance(coords1[i], coords2[i], maxDist)
+        if cD == maxDist: # ignore distances where the correct distance is maximal
+          continue
+        est_dists.append(dists[i])
+        correct_dists.append(cD)
+      return np.mean(np.abs(np.array(est_dists) - np.array(correct_dists)))
+        
 
   def correctDistance(self, start, dest, maxDist):
     dist = dest[0] - start[0]
