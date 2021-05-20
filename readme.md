@@ -107,8 +107,9 @@ place in the log-distance space:
 Where now the *D(s1,g,a)* is learning a the log-distance between state *s1* and state *g* after taking action *a*.
 This update is still a contraction in the sup-norm - see the below proof:
 
-<iframe src="http://github.com/luketjohnston/distance/blob/main/images/contraction_proof.pdf" frameborder="0"></iframe>
-![proof of contraction of log-distance update](images/contraction_proof.pdf)
+![proof of contraction of log-distance update](images/contraction_proof.png)
+Link to pdf:
+[proof of contraction of log-distance update](images/contraction_proof.pdf)
 
 
 With this modification, the network does a much better job of learning small distances on the DeadEnd environment,
