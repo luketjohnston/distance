@@ -38,9 +38,9 @@ for the final version of this function (I modify it in that section). Of course,
 doesn't mean that it can be learned easily with a function approximator, but it's encouraging at least.
 
 
-With this distance function learned, the goal pursuer can simply pick the action a that minimizes the predicted distance to the goal!
+With this distance function learned, the goal pursuer can simply pick the action *a* that minimizes the predicted distance to the goal!
 In practice I suspect things will be a little more complicated than this - if the action with minimum distance
-is picked every time, then it's possible that "mistakes" in the learned distance function will lead to the goal
+is picked every time, then it's possible that mistakes in the learned distance function will lead to the goal
 pursuer getting stuck in loops. This problem could potentially be solved by having the goal pursuer randomly sample
 from actions according *D(s1,sk,a)* (so actions that lead to large distances would be less likely than those that lead to
 small distances).
@@ -57,7 +57,8 @@ for the 20x20 environment. Datapoints are single batches of size 1024 (I found h
 ![basic grid, vanilla distance training curve](images/basic_graph.png)
 
 An obvious next step is to increase the size of the toy environment. In my experiments I have not yet been able
-to reach 100% action accurracy in a toy environment above the size of about 40x40 (see discussion section).
+to reach 100% action accurracy in a toy environment above the size of about 40x40 (see discussion section). Also,
+it's worth noting that the distance errors do not converge to 0, even on the 20x20 environment.
 
 
 ## Uncommon transition toy environment (UTTE) and prioritized experience replay:
@@ -67,7 +68,7 @@ the exception that transitions off the bottom side of the grid bring the agent b
 Since the agent so far learns the distance function entirely through random actions, these transitions happen relatively
 infrequently (the agent's random walk needs to bring it all the way across the grid). In my initial experiments,
 I was not able to achieve 100% action accurracy on this environment. So, I added prioritized experience replay,
-a common and successful technique to deal with this 'problem' of rarely-seen transitions. Below are the graphs
+a common and successful technique to learn rarely-seen transitions more effectively. Below are the graphs
 for the learned action accurracy with and without prioritized experience replay.
 
 ![LoopEnv, no priority](images/loopenv_nopriority.png)
@@ -84,7 +85,7 @@ My ultimate goal for this project was to train the agent in the Montezuma's Reve
 One important characteristic of this environment is that it has many "dead ends" - for example, when the
 player jumps off a ledge, they are stuck in "dead end" until they hit the ground, die, and the game restarts.
 To replicate this scenario, the DETE is a simple 1d line of 10 states, where each action transitions the
-agent one state left, and when the agent reaches the last state, the environment is terminated. Hence,
+agent one state left, and when the agent takes any action from the last state, the environment is terminated. Hence,
 the distance function must learn maximal distances for any (state, goal) pairs where the goal
 happens before the state in this deterministic progression (the maximal distance is limited by the discount parameter,
 for the vanilla distance approach).  
@@ -121,7 +122,7 @@ while still learning large distances for the unachievable states:
 Note that the mean distance difference does not converge to 0. So, the model is not learning
 the log-distance perfectly. Upon inspection of the actual values learned, the model seems to me
 to be learning relative distances pretty well, especially with respect to each starting state,
-but it systematically underestimates from the true distances. I suspect I will need to fine-tune
+but it systematically underestimates the true distances. I suspect I will need to fine-tune
 things more if it could every be used on a more complicated environment (see discussion section).
 
 
@@ -136,16 +137,23 @@ the second with output size *|A|* (the number of actions).
 
 The loss for the log distance function is computed as follows: for each transition
 *(s1, s2, a)*, with goal state *sk*, the *Dab* loss is *(D(s1, s2, a))^2*, and
-the *Dak* loss is *(D(s1, sk, a) - log (1 + min b e^D(s2, sk, b)))^2*. If 
-*s1 -> s2* is a terminal transition, then the target *D(s2, sk, b)* is set to be
-the maximum possible (I used 10). For prioritized replay, I used an alpha
+the *Dak* loss is *(D(s1, sk, a) - log (1 + min b e^D(s2, sk, b)))^2*. 
+If *s1 -> s2* is a terminal transition, then the target *D(s2, sk, b)* is set to be
+the maximum possible (I used 10). 
+The *Dab* loss,
+therefore, brings the distance to 1 for observed transitions, while the *Dak* loss
+performs the one-step TD update for log-distance. 
+For prioritized replay, I used an alpha
 value of 1.0 and a beta of 0.0 (since I'm working in deterministic environments
 only so far, importance sampling is not required for prioritized replay). The 
 *Dab* and *Dak* losses are combined to get *Loss = C * Dab + Dak*. I left *C = 1.0*
-through all my experiments. I used an experience replay of size 2^18,
+through all my experiments. I used an experience replay buffer of size 2^18,
 the Adam optimizer with learning rate 0.001, and batch size of 1024.  After filling
 up the experience replay buffer, I trained with alternating steps of acting 
-for 512 steps, and then training for 600 batches.
+for 512 steps, and then training for 600 batches. The graphs for the basic
+environment and the DeadEnd environment, however, were trained without experience replay - 
+they were trained with randomly sampled transitions, to make training faster (which we
+can think of as an infinitely large replay buffer).
 
 I did a bit of analysis with the tensorflow profiler, and the training is hard CPU-bound.
 So, I added a bit of multiprocessing (6 workers converted sampled indices into the replay
@@ -159,7 +167,8 @@ upgrading the encoding step to use CNNs instead of fully connected layers, and i
 is able to learn some dead-end states, but distances are mostly meaningless otherwise.
 I suspect that a major weakness of my approach is that it can only use the one-step 
 TD-error to learn the distance function - most successfull deep reinforcement learning approaches that I'm aware of use 
-n-step rollouts for the targets. 
+n-step rollouts for the targets. I did not use a target network for any of the results shown here -
+I tried using one but found it slowed down convergence a lot.
 
 
 
