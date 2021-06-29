@@ -31,7 +31,7 @@ as a function mapping current state *s*, goal state *g*, and action *a* to a dis
 then this function can be learned in a similar manner to standard Q-learning: for each transition *(s1,a -> s2)* with goal state *g*,
 we can use the update
 
-*D(s1,g,a) <= 1 + gamma * min b (D(s2, g, b))*
+*D(s1,g,a) <- 1 + gamma * min b (D(s2, g, b))*
 
 This is a contraction in the sup-norm, just like Q-learning. See section "Dead end toy environment" for a proof of the contraction
 for the final version of this function (I modify it in that section). Of course, this being a contraction of the sup-norm
@@ -103,7 +103,7 @@ Clearly, accurracy at these distances is being sacrificed for better accurracy a
 In order to weight smaller distances higher in the loss function, I modified the distance update to take 
 place in the log-distance space:
 
-*D(s1,g,a) <= log (1 + min b exp(D(s2, g, b))*
+*D(s1,g,a) <- log (1 + min b exp(D(s2, g, b))*
 
 Where now the *D(s1,g,a)* is learning a the log-distance between state *s1* and state *g* after taking action *a*.
 This update is still a contraction in the sup-norm - see the below proof:
