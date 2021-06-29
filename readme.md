@@ -167,8 +167,8 @@ upgrading the encoding step to use CNNs instead of fully connected layers, and i
 is able to learn some dead-end states, but distances are mostly meaningless otherwise.
 I suspect that a major weakness of my approach is that it can only use the one-step 
 TD-error to learn the distance function - most successfull deep reinforcement learning approaches that I'm aware of use 
-n-step rollouts for the targets. I did not use a target network for any of the results shown here -
-I tried using one but found it slowed down convergence a lot.
+some kind of rollouts (i.e. n-step rollouts, generalized advantage estimates, etc) for the targets. I did not use a target network for any of the results shown here -
+I tried using one but found it slowed down convergence a lot. However I think it's worth investigating using a target network further.
 
 
 
